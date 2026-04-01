@@ -6,7 +6,7 @@ Ferramenta para higienizar conteúdos RTF/TXT com corrupção por metadados de D
 ![Platform](https://img.shields.io/badge/Plataforma-Windows-0078D6?logo=windows&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Em%20uso-2EA043)
 ![Database](https://img.shields.io/badge/PostgreSQL-16%2B-4169E1?logo=postgresql&logoColor=white)
-![License](https://img.shields.io/badge/Licen%C3%A7a-definir-lightgrey)
+[![License: MIT](https://img.shields.io/badge/Licen%C3%A7a-MIT-green.svg)](LICENSE)
 
 Projeto **desenvolvido por Bruno Fernandes** — [LinkedIn](https://www.linkedin.com/in/bruno-fernandes-ti)
 
@@ -299,5 +299,5 @@ python batch_sanitize_rtf.py --execute --cleaning-level agressivo --min-length 5
 
 ## Licença
 
-Defina aqui a licença do projeto (ex.: MIT, Apache-2.0, Proprietária).
+Este projeto é **open source** sob a licença **MIT**: podes usar, copiar, modificar e distribuir o código com poucas condições (incluindo uso comercial), desde que mantenhas o aviso de copyright. O texto completo está em [`LICENSE`](LICENSE).
 
