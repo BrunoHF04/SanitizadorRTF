@@ -6,6 +6,8 @@ Interface gráfica para sanitizar RTF (remoção de lixo DDE após {\*\bkmkstart
 
 from __future__ import annotations
 
+import ctypes
+import os
 import queue
 import threading
 import tkinter as tk
@@ -50,14 +52,42 @@ class App(tk.Tk):
         super().__init__()
         self._apply_dark_theme()
         self.title("Sanitizador RTF — DDE / bookmark")
-        self.minsize(860, 560)
-        self.geometry("980x650")
+        self.minsize(920, 620)
+        self.geometry("1040x720")
+        self.update_idletasks()
+        self._apply_windows_titlebar_dark()
 
         self._queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._last_batch_id = ""
         self._stop_requested = threading.Event()
+        self._progress_animating = False
+        self._progress_base_text = "Progresso: parado"
+        self._progress_anim_step = 0
         self._build()
         self.after(200, self._poll_queue)
+
+    def _apply_windows_titlebar_dark(self) -> None:
+        """
+        Ativa modo escuro da barra de título no Windows 10/11.
+        Em outras plataformas, simplesmente ignora.
+        """
+        if os.name != "nt":
+            return
+        try:
+            hwnd = self.winfo_id()
+            value = ctypes.c_int(1)
+            dwmapi = ctypes.windll.dwmapi
+            # Windows 11/10 recentes usam 20; builds antigos usam 19.
+            for attr in (20, 19):
+                dwmapi.DwmSetWindowAttribute(
+                    ctypes.c_void_p(hwnd),
+                    ctypes.c_uint(attr),
+                    ctypes.byref(value),
+                    ctypes.sizeof(value),
+                )
+        except Exception:
+            # Falha aqui não deve impedir a abertura da aplicação.
+            pass
 
     def _apply_dark_theme(self) -> None:
         bg = "#1f2128"
@@ -67,7 +97,8 @@ class App(tk.Tk):
         muted = "#a8b0c0"
         accent = "#5b8cff"
         field = "#2a2f3a"
-        border = "#3a4150"
+        border = "#353c4a"
+        border_soft = "#2f3542"
 
         style = ttk.Style(self)
         try:
@@ -85,16 +116,19 @@ class App(tk.Tk):
         self.option_add("*Text.Background", field)
         self.option_add("*Text.Foreground", fg)
         self.option_add("*insertBackground", "#ffffff")
+        self.option_add("*highlightBackground", bg)
+        self.option_add("*highlightColor", accent)
 
         style.configure(".", background=bg, foreground=fg)
+        style.configure(".", focuscolor=border_soft)
         style.configure("TFrame", background=bg)
         style.configure(
             "TLabelframe",
             background=bg,
             foreground=fg,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
+            bordercolor=border_soft,
+            lightcolor=border_soft,
+            darkcolor=border_soft,
             borderwidth=1,
             relief="solid",
         )
@@ -117,7 +151,7 @@ class App(tk.Tk):
             "TButton",
             background=panel2,
             foreground=fg,
-            bordercolor=border,
+            bordercolor=border_soft,
             lightcolor=panel2,
             darkcolor=panel2,
             padding=(10, 5),
@@ -133,20 +167,27 @@ class App(tk.Tk):
             fieldbackground=field,
             foreground=fg,
             insertcolor="#ffffff",
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
+            bordercolor=border_soft,
+            lightcolor=border_soft,
+            darkcolor=border_soft,
         )
-        style.map("TEntry", fieldbackground=[("readonly", "#242934")], foreground=[("readonly", "#d5d8df")])
+        style.map(
+            "TEntry",
+            fieldbackground=[("readonly", "#242934")],
+            foreground=[("readonly", "#d5d8df")],
+            bordercolor=[("focus", "#4f79d9"), ("!focus", border_soft)],
+            lightcolor=[("focus", "#4f79d9"), ("!focus", border_soft)],
+            darkcolor=[("focus", "#4f79d9"), ("!focus", border_soft)],
+        )
 
         style.configure(
             "TCombobox",
             fieldbackground=field,
             background=panel2,
             foreground=fg,
-            bordercolor=border,
-            lightcolor=border,
-            darkcolor=border,
+            bordercolor=border_soft,
+            lightcolor=border_soft,
+            darkcolor=border_soft,
             arrowsize=14,
         )
         style.map(
@@ -154,14 +195,45 @@ class App(tk.Tk):
             fieldbackground=[("readonly", "#242934")],
             foreground=[("readonly", "#d5d8df")],
             background=[("active", "#384053")],
+            bordercolor=[("focus", "#4f79d9"), ("!focus", border_soft)],
+            lightcolor=[("focus", "#4f79d9"), ("!focus", border_soft)],
+            darkcolor=[("focus", "#4f79d9"), ("!focus", border_soft)],
         )
 
-        style.configure("TNotebook", background=bg, borderwidth=0)
-        style.configure("TNotebook.Tab", background=panel, foreground=fg, padding=(10, 6))
+        style.configure(
+            "Dark.TNotebook",
+            background=bg,
+            borderwidth=1,
+            bordercolor=border_soft,
+            lightcolor=border_soft,
+            darkcolor=border_soft,
+            tabmargins=(6, 6, 6, 0),
+        )
+        style.configure(
+            "Dark.TNotebook.Tab",
+            background="#2a3040",
+            foreground="#c9d3e7",
+            padding=(14, 8),
+            bordercolor=border_soft,
+            lightcolor=border_soft,
+            darkcolor=border_soft,
+            borderwidth=1,
+        )
         style.map(
-            "TNotebook.Tab",
-            background=[("selected", panel2), ("active", "#363d4d")],
-            foreground=[("selected", "#ffffff"), ("active", "#ffffff")],
+            "Dark.TNotebook.Tab",
+            background=[
+                ("selected", "#3b4b69"),
+                ("active", "#33425e"),
+                ("!selected", "#2a3040"),
+            ],
+            foreground=[
+                ("selected", "#ffffff"),
+                ("active", "#f3f6ff"),
+                ("!selected", "#c9d3e7"),
+            ],
+            bordercolor=[("selected", "#4f79d9"), ("!selected", border_soft)],
+            lightcolor=[("selected", "#4f79d9"), ("!selected", border_soft)],
+            darkcolor=[("selected", "#4f79d9"), ("!selected", border_soft)],
         )
 
         style.configure("Horizontal.TScrollbar", background=panel2, troughcolor=panel)
@@ -205,7 +277,7 @@ class App(tk.Tk):
         )
         ttk.Button(rr, text="Carregar JSON...", command=self._carregar_markers_json).pack(side=tk.LEFT)
 
-        notebook = ttk.Notebook(frm)
+        notebook = ttk.Notebook(frm, style="Dark.TNotebook")
         notebook.pack(fill=tk.BOTH, expand=True, **pad)
 
         aba_arquivo = ttk.Frame(notebook, padding=10)
@@ -214,6 +286,44 @@ class App(tk.Tk):
         notebook.add(aba_arquivo, text="Arquivo")
         notebook.add(aba_pasta, text="Pasta (lote)")
         notebook.add(aba_banco, text="Banco de dados")
+
+        # Área rolável da aba Banco de dados para caber em ecrãs menores.
+        banco_canvas = tk.Canvas(
+            aba_banco,
+            highlightthickness=0,
+            borderwidth=0,
+            bg="#1f2128",
+        )
+        banco_scroll = ttk.Scrollbar(aba_banco, orient=tk.VERTICAL, command=banco_canvas.yview)
+        banco_canvas.configure(yscrollcommand=banco_scroll.set)
+        banco_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        banco_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        banco_content = ttk.Frame(banco_canvas)
+        banco_window_id = banco_canvas.create_window((0, 0), window=banco_content, anchor="nw")
+
+        def _sync_banco_scroll_region(_event: object) -> None:
+            banco_canvas.configure(scrollregion=banco_canvas.bbox("all"))
+
+        def _sync_banco_content_width(event: object) -> None:
+            banco_canvas.itemconfigure(banco_window_id, width=event.width)
+
+        banco_content.bind("<Configure>", _sync_banco_scroll_region)
+        banco_canvas.bind("<Configure>", _sync_banco_content_width)
+
+        def _on_banco_mousewheel(event: object) -> None:
+            delta = getattr(event, "delta", 0)
+            if delta:
+                banco_canvas.yview_scroll(int(-delta / 120), "units")
+            else:
+                num = getattr(event, "num", 0)
+                if num == 4:
+                    banco_canvas.yview_scroll(-1, "units")
+                elif num == 5:
+                    banco_canvas.yview_scroll(1, "units")
+
+        banco_canvas.bind_all("<MouseWheel>", _on_banco_mousewheel)
+        banco_canvas.bind_all("<Button-4>", _on_banco_mousewheel)
+        banco_canvas.bind_all("<Button-5>", _on_banco_mousewheel)
 
         # —— Aba Arquivo ——
         f1 = ttk.LabelFrame(aba_arquivo, text="Um ficheiro", padding=8)
@@ -299,7 +409,7 @@ class App(tk.Tk):
         self._atualizar_estado_destino_lote()
 
         # —— Aba Banco de dados (PostgreSQL) ——
-        f3 = ttk.Frame(aba_banco, padding=2)
+        f3 = ttk.Frame(banco_content, padding=2)
         f3.pack(fill=tk.X, **pad)
 
         conn_box = ttk.LabelFrame(f3, text="1) Conexão", padding=8)
@@ -374,14 +484,16 @@ class App(tk.Tk):
         run_box.pack(fill=tk.X, pady=(8, 0))
         run_checks = ttk.Frame(run_box)
         run_checks.pack(fill=tk.X)
+        run_checks_2 = ttk.Frame(run_box)
+        run_checks_2.pack(fill=tk.X, pady=(6, 0))
         self._db_only_rtf = tk.BooleanVar(value=True)
         ttk.Checkbutton(run_checks, text="Apenas registros que parecem RTF", variable=self._db_only_rtf).pack(side=tk.LEFT)
         self._db_full_scan = tk.BooleanVar(value=False)
-        ttk.Checkbutton(run_checks, text="Varredura geral", variable=self._db_full_scan).pack(side=tk.LEFT, padx=(14, 0))
+        ttk.Checkbutton(run_checks, text="Varredura geral", variable=self._db_full_scan).pack(side=tk.LEFT, padx=(18, 0))
         self._db_execute = tk.BooleanVar(value=False)
-        ttk.Checkbutton(run_checks, text="Aplicar UPDATE", variable=self._db_execute).pack(side=tk.LEFT, padx=(14, 0))
+        ttk.Checkbutton(run_checks_2, text="Aplicar UPDATE", variable=self._db_execute).pack(side=tk.LEFT)
         self._db_strict_validation = tk.BooleanVar(value=True)
-        ttk.Checkbutton(run_checks, text="Validação RTF estrita", variable=self._db_strict_validation).pack(side=tk.LEFT, padx=(14, 0))
+        ttk.Checkbutton(run_checks_2, text="Validação RTF estrita", variable=self._db_strict_validation).pack(side=tk.LEFT, padx=(18, 0))
 
         run_progress = ttk.Frame(run_box)
         run_progress.pack(fill=tk.X, pady=(8, 0))
@@ -401,12 +513,19 @@ class App(tk.Tk):
         db5.pack(fill=tk.X)
         ttk.Label(db5, text="Batch ID").pack(side=tk.LEFT)
         self._db_batch_id = tk.StringVar()
-        ttk.Entry(db5, textvariable=self._db_batch_id).pack(side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True)
-        ttk.Button(db5, text="Rollback", command=self._rollback_batch).pack(side=tk.RIGHT)
-        ttk.Button(db5, text="Ver relatório", command=self._ver_relatorio_batch).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(db5, text="Exportar CSV", command=self._exportar_relatorio_csv).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Entry(db5, textvariable=self._db_batch_id).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        ttk.Label(
+            audit_box,
+            text="Use o Batch ID para consultar, exportar ou desfazer um lote.",
+            foreground="#aeb4c0",
+        ).pack(anchor=tk.W, pady=(6, 0))
+        db5_actions = ttk.Frame(audit_box)
+        db5_actions.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(db5_actions, text="Ver relatório", command=self._ver_relatorio_batch).pack(side=tk.LEFT)
+        ttk.Button(db5_actions, text="Exportar CSV", command=self._exportar_relatorio_csv).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(db5_actions, text="Rollback", command=self._rollback_batch).pack(side=tk.RIGHT)
 
-        f3b = ttk.LabelFrame(aba_banco, text="URL gerada (opcional)", padding=8)
+        f3b = ttk.LabelFrame(banco_content, text="URL gerada (opcional)", padding=8)
         f3b.pack(fill=tk.X, **pad)
         self._db_url_preview = tk.StringVar()
         ttk.Entry(f3b, textvariable=self._db_url_preview, state="readonly").pack(
@@ -444,6 +563,29 @@ class App(tk.Tk):
         self._log.insert(tk.END, msg + "\n")
         self._log.see(tk.END)
         self._log.configure(state=tk.DISABLED)
+
+    def _animate_progress_text(self) -> None:
+        if not self._progress_animating:
+            return
+        dots = ["", ".", "..", "..."]
+        suffix = dots[self._progress_anim_step % len(dots)]
+        self._db_progress_text.set(f"{self._progress_base_text}{suffix}")
+        self._progress_anim_step += 1
+        self.after(380, self._animate_progress_text)
+
+    def _set_progress_status(self, base_text: str, *, animate: bool) -> None:
+        self._progress_base_text = base_text
+        self._progress_anim_step = 0
+        if animate:
+            if not self._progress_animating:
+                self._progress_animating = True
+                self._animate_progress_text()
+            else:
+                # Atualiza imediatamente para novo contexto sem esperar próximo ciclo.
+                self._db_progress_text.set(base_text)
+        else:
+            self._progress_animating = False
+            self._db_progress_text.set(base_text)
 
     def _mostrar_manual(self) -> None:
         texto = (
@@ -883,11 +1025,11 @@ class App(tk.Tk):
             messagebox.showwarning("Commit por lote", "Informe um número inteiro > 0.")
             return
         self._stop_requested.clear()
-        self._db_progress_text.set("Progresso: iniciando...")
+        self._set_progress_status("Progresso: consultando registros", animate=True)
 
         def job() -> None:
             try:
-                self._queue.put(("log", "Iniciando higienização no banco..."))
+                self._queue.put(("log", "Consultando registros candidatos no banco..."))
                 if execute:
                     preview_lines: list[str] = []
                     total_preview, skipped_preview, _ = sanitize_documento_mesclado(
@@ -945,6 +1087,8 @@ class App(tk.Tk):
                         self._queue.put(("msg", ("Banco", "UPDATE cancelado pelo usuário.", False)))
                         return
 
+                    self._queue.put(("log", "Prévia confirmada. Iniciando higienização (UPDATE)..."))
+                    self.after(0, lambda: self._set_progress_status("Progresso: higienizando registros", animate=True))
                     updated, skipped, batch_id = sanitize_documento_mesclado(
                         db_url,
                         execute=True,
@@ -962,7 +1106,10 @@ class App(tk.Tk):
                         strict_rtf_validation=strict_rtf_validation,
                         should_stop=lambda: self._stop_requested.is_set(),
                         progress=lambda s, u, k: self.after(
-                            0, lambda: self._db_progress_text.set(f"Progresso: lidos={s} atualizados={u} ignorados={k}")
+                            0, lambda: self._set_progress_status(
+                                f"Progresso: lidos={s} atualizados={u} ignorados={k}",
+                                animate=True,
+                            )
                         ),
                         log=lambda m: self._queue.put(("log", m)),
                     )
@@ -981,6 +1128,8 @@ class App(tk.Tk):
                         )
                     )
                 else:
+                    self._queue.put(("log", "Iniciando simulação de higienização..."))
+                    self.after(0, lambda: self._set_progress_status("Progresso: simulando higienização", animate=True))
                     updated, skipped, _ = sanitize_documento_mesclado(
                         db_url,
                         execute=False,
@@ -998,7 +1147,10 @@ class App(tk.Tk):
                         strict_rtf_validation=strict_rtf_validation,
                         should_stop=lambda: self._stop_requested.is_set(),
                         progress=lambda s, u, k: self.after(
-                            0, lambda: self._db_progress_text.set(f"Progresso: lidos={s} simulados={u} ignorados={k}")
+                            0, lambda: self._set_progress_status(
+                                f"Progresso: lidos={s} simulados={u} ignorados={k}",
+                                animate=True,
+                            )
                         ),
                         log=lambda m: self._queue.put(("log", m)),
                     )
@@ -1015,7 +1167,7 @@ class App(tk.Tk):
             except Exception as e:  # noqa: BLE001
                 self._queue.put(("msg", ("Erro", str(e), True)))
             finally:
-                self.after(0, lambda: self._db_progress_text.set("Progresso: parado"))
+                self.after(0, lambda: self._set_progress_status("Progresso: parado", animate=False))
         threading.Thread(target=job, daemon=True).start()
 
     def _ver_relatorio_batch(self) -> None:
@@ -1079,7 +1231,7 @@ class App(tk.Tk):
 
     def _parar_processamento_banco(self) -> None:
         self._stop_requested.set()
-        self._db_progress_text.set("Progresso: solicitação de parada enviada...")
+        self._set_progress_status("Progresso: solicitação de parada enviada", animate=True)
         self._queue.put(("log", "Solicitação de parada enviada. Aguarde o término da etapa atual."))
 
     def _rollback_batch(self) -> None:
