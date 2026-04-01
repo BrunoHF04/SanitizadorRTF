@@ -70,19 +70,19 @@ class App(tk.Tk):
         self._build()
         self.after(200, self._poll_queue)
 
-    def _apply_windows_titlebar_dark(self) -> None:
+    def _apply_windows_titlebar_dark(self, win: tk.Misc | None = None) -> None:
         """
         Barra de título nativa (minimizar/maximizar/fechar) no tema escuro.
 
         No Tk, winfo_id() é o HWND do cliente interno; o DWM precisa do HWND
         da janela top-level (GetParent), senão a API não altera a barra.
-        Opcionalmente aplica DWMWA_CAPTION_COLOR no Windows 11 22H2+ para
-        harmonizar com o fundo da app (#1f2128).
+        `win` pode ser a janela principal ou um Toplevel (ajuda, manual, etc.).
         """
         if os.name != "nt":
             return
+        w = win if win is not None else self
         try:
-            wid = int(self.winfo_id())
+            wid = int(w.winfo_id())
             hwnd = int(ctypes.windll.user32.GetParent(wid))
             if hwnd == 0:
                 hwnd = wid
@@ -91,7 +91,6 @@ class App(tk.Tk):
             dwm = ctypes.windll.dwmapi
             DWMWA_USE_IMMERSIVE_DARK_MODE = 20
             DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19
-            # Win11 / Win10 20H1+
             if dwm.DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -107,12 +106,11 @@ class App(tk.Tk):
 
         except Exception:
             return
-        # Windows 11 22H2+: cor da legenda; falha em builds antigas sem efeito na linha seguinte
         try:
             DWMWA_CAPTION_COLOR = 35
             caption_bgr = ctypes.c_int(0x0028211F)  # #1f2128 (0x00BBGGRR)
             dwm = ctypes.windll.dwmapi
-            wid = int(self.winfo_id())
+            wid = int(w.winfo_id())
             hwnd = int(ctypes.windll.user32.GetParent(wid)) or wid
             dwm.DwmSetWindowAttribute(
                 hwnd,
@@ -130,6 +128,70 @@ class App(tk.Tk):
         self._apply_windows_titlebar_dark()
         self.after(150, self._apply_windows_titlebar_dark)
         self.after(450, self._apply_windows_titlebar_dark)
+
+    def _refresh_banco_scroll_region(self) -> None:
+        """Atualiza scrollregion do canvas da aba Banco (ex.: após colapsar um cartão)."""
+        def _go() -> None:
+            c = getattr(self, "_banco_canvas", None)
+            if c is None:
+                return
+            try:
+                self.update_idletasks()
+                bbox = c.bbox("all")
+                if bbox:
+                    c.configure(scrollregion=bbox)
+            except tk.TclError:
+                pass
+
+        self.after_idle(_go)
+
+    def _collapsible_db_card(
+        self,
+        parent: tk.Misc,
+        title: str,
+        *,
+        start_open: bool = False,
+        pady_top: int = 0,
+    ) -> ttk.Frame:
+        """
+        Cartão com título clicável (▼/▶) na aba Banco de dados.
+        Devolve o frame interior (equivalente ao antigo LabelFrame com padding).
+        """
+        outer = ttk.Frame(parent)
+        outer.pack(fill=tk.X, pady=(pady_top, 0))
+
+        expanded = tk.BooleanVar(value=start_open)
+        header_fr = ttk.Frame(outer)
+        header_fr.pack(fill=tk.X)
+        hdr = ttk.Label(
+            header_fr,
+            cursor="hand2",
+            font=("TkDefaultFont", 9, "bold"),
+            foreground="#c9d3e7",
+        )
+        hdr.pack(side=tk.LEFT, anchor=tk.W)
+
+        sep = ttk.Separator(outer, orient=tk.HORIZONTAL)
+        body = ttk.Frame(outer, padding=8)
+
+        def refresh() -> None:
+            on = expanded.get()
+            hdr.configure(text=f"{'▼' if on else '▶'}  {title}")
+            if on:
+                sep.pack(fill=tk.X, pady=(2, 6))
+                body.pack(fill=tk.X)
+            else:
+                body.pack_forget()
+                sep.pack_forget()
+            self._refresh_banco_scroll_region()
+
+        def toggle(_event: object | None = None) -> None:
+            expanded.set(not expanded.get())
+            refresh()
+
+        hdr.bind("<Button-1>", toggle)
+        refresh()
+        return body
 
     def _apply_dark_theme(self) -> None:
         bg = "#1f2128"
@@ -279,8 +341,41 @@ class App(tk.Tk):
             darkcolor=[("selected", "#4f79d9"), ("!selected", border_soft)],
         )
 
+        # Barras de rolagem: estilo único escuro (mesma faixa do Registo / texto #262c37), mais largas e legíveis.
+        sb_trough = "#262c37"
+        sb_thumb = "#3d4658"
+        sb_thumb_active = "#4d5a72"
+        sb_border = "#353c4a"
+        sb_arrow = "#d0d8e8"
+        style.layout("Dark.Vertical.TScrollbar", style.layout("Vertical.TScrollbar"))
+        style.configure(
+            "Dark.Vertical.TScrollbar",
+            background=sb_thumb,
+            troughcolor=sb_trough,
+            bordercolor=sb_border,
+            lightcolor=sb_border,
+            darkcolor=sb_border,
+            arrowcolor=sb_arrow,
+            arrowsize=13,
+            width=14,
+            gripcount=0,
+        )
+        style.map(
+            "Dark.Vertical.TScrollbar",
+            background=[
+                ("pressed", sb_thumb_active),
+                ("active", sb_thumb_active),
+                ("!disabled", sb_thumb),
+            ],
+            troughcolor=[("!disabled", sb_trough)],
+            arrowcolor=[
+                ("pressed", "#ffffff"),
+                ("active", "#f0f4fc"),
+                ("!disabled", sb_arrow),
+            ],
+        )
         style.configure("Horizontal.TScrollbar", background=panel2, troughcolor=panel)
-        style.configure("Vertical.TScrollbar", background=panel2, troughcolor=panel)
+        style.configure("Vertical.TScrollbar", background=sb_thumb, troughcolor=sb_trough)
 
     def _build(self) -> None:
         pad = {"padx": 10, "pady": 8}
@@ -346,10 +441,16 @@ class App(tk.Tk):
             borderwidth=0,
             bg="#1f2128",
         )
-        banco_scroll = ttk.Scrollbar(aba_banco, orient=tk.VERTICAL, command=banco_canvas.yview)
+        banco_scroll = ttk.Scrollbar(
+            aba_banco,
+            orient=tk.VERTICAL,
+            style="Dark.Vertical.TScrollbar",
+            command=banco_canvas.yview,
+        )
         banco_canvas.configure(yscrollcommand=banco_scroll.set)
         banco_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         banco_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._banco_canvas = banco_canvas
         banco_content = ttk.Frame(banco_canvas)
         banco_window_id = banco_canvas.create_window((0, 0), window=banco_content, anchor="nw")
 
@@ -464,8 +565,7 @@ class App(tk.Tk):
         f3 = ttk.Frame(banco_content, padding=2)
         f3.pack(fill=tk.X, **pad)
 
-        conn_box = ttk.LabelFrame(f3, text="1) Conexão", padding=8)
-        conn_box.pack(fill=tk.X)
+        conn_box = self._collapsible_db_card(f3, "1) Conexão", pady_top=0)
         db1 = ttk.Frame(conn_box)
         db1.pack(fill=tk.X)
         ttk.Label(db1, text="Host").grid(row=0, column=0, sticky="w", padx=(0, 6))
@@ -497,8 +597,7 @@ class App(tk.Tk):
             row=0, column=6, sticky="e"
         )
 
-        scope_box = ttk.LabelFrame(f3, text="2) Escopo e filtros", padding=8)
-        scope_box.pack(fill=tk.X, pady=(8, 0))
+        scope_box = self._collapsible_db_card(f3, "2) Escopo e filtros", pady_top=8)
         db2 = ttk.Frame(scope_box)
         db2.pack(fill=tk.X)
         ttk.Label(db2, text="Tabela").grid(row=0, column=0, sticky="w", padx=(0, 6))
@@ -546,8 +645,7 @@ class App(tk.Tk):
             variable=self._db_sql_size_only,
         ).pack(anchor=tk.W, pady=(8, 0))
 
-        run_box = ttk.LabelFrame(f3, text="3) Execução", padding=8)
-        run_box.pack(fill=tk.X, pady=(8, 0))
+        run_box = self._collapsible_db_card(f3, "3) Execução", pady_top=8)
         run_checks = ttk.Frame(run_box)
         run_checks.pack(fill=tk.X)
         self._db_only_rtf = tk.BooleanVar(value=True)
@@ -574,8 +672,7 @@ class App(tk.Tk):
             side=tk.LEFT, fill=tk.X, expand=True, anchor=tk.W
         )
 
-        audit_box = ttk.LabelFrame(f3, text="4) Batch e auditoria", padding=8)
-        audit_box.pack(fill=tk.X, pady=(8, 0))
+        audit_box = self._collapsible_db_card(f3, "4) Batch e auditoria", pady_top=8)
         db5 = ttk.Frame(audit_box)
         db5.pack(fill=tk.X)
         ttk.Label(db5, text="Batch ID").pack(side=tk.LEFT)
@@ -613,7 +710,12 @@ class App(tk.Tk):
             relief=tk.FLAT,
             borderwidth=0,
         )
-        sb = ttk.Scrollbar(log_frame, command=self._log.yview)
+        sb = ttk.Scrollbar(
+            log_frame,
+            orient=tk.VERTICAL,
+            style="Dark.Vertical.TScrollbar",
+            command=self._log.yview,
+        )
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._log.configure(yscrollcommand=sb.set)
@@ -709,14 +811,13 @@ class App(tk.Tk):
             "- RTF muito grande com imagens: use 'agressivo' se precisar de texto sem binário.\n"
             "- Documento corrompido por outra ferramenta: restaure .bak/original e tente de novo."
         )
-        messagebox.showinfo("Ajuda / Manual", texto)
-
-    def _mostrar_manual_completo(self) -> None:
         janela = tk.Toplevel(self)
-        janela.title("Manual completo — Sanitizador RTF")
-        janela.geometry("860x620")
-        janela.minsize(760, 520)
+        janela.title("Ajuda / Manual")
+        janela.geometry("640x480")
+        janela.minsize(440, 320)
         janela.transient(self)
+        janela.configure(bg="#1f2128")
+        janela.grab_set()
 
         container = ttk.Frame(janela, padding=12)
         container.pack(fill=tk.BOTH, expand=True)
@@ -731,7 +832,57 @@ class App(tk.Tk):
             relief=tk.FLAT,
             borderwidth=0,
         )
-        sb = ttk.Scrollbar(container, command=txt.yview)
+        sb = ttk.Scrollbar(
+            container,
+            orient=tk.VERTICAL,
+            style="Dark.Vertical.TScrollbar",
+            command=txt.yview,
+        )
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        txt.insert("1.0", texto)
+        txt.configure(state=tk.DISABLED)
+
+        footer = ttk.Frame(janela, padding=(12, 0, 12, 12))
+        footer.pack(fill=tk.X)
+
+        def _fechar_ajuda() -> None:
+            janela.grab_release()
+            janela.destroy()
+
+        ttk.Button(footer, text="OK", command=_fechar_ajuda).pack(side=tk.RIGHT)
+        janela.bind("<Escape>", lambda _e: _fechar_ajuda())
+        janela.after(80, lambda: self._apply_windows_titlebar_dark(janela))
+        janela.after(200, lambda: self._apply_windows_titlebar_dark(janela))
+
+    def _mostrar_manual_completo(self) -> None:
+        janela = tk.Toplevel(self)
+        janela.title("Manual completo — Sanitizador RTF")
+        janela.geometry("860x620")
+        janela.minsize(760, 520)
+        janela.transient(self)
+        janela.configure(bg="#1f2128")
+
+        container = ttk.Frame(janela, padding=12)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        txt = tk.Text(container, wrap=tk.WORD)
+        txt.configure(
+            bg="#262c37",
+            fg="#e8e8e8",
+            insertbackground="#ffffff",
+            selectbackground="#5b8cff",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            borderwidth=0,
+        )
+        sb = ttk.Scrollbar(
+            container,
+            orient=tk.VERTICAL,
+            style="Dark.Vertical.TScrollbar",
+            command=txt.yview,
+        )
         txt.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -855,6 +1006,9 @@ class App(tk.Tk):
         footer = ttk.Frame(janela, padding=(12, 0, 12, 12))
         footer.pack(fill=tk.X)
         ttk.Button(footer, text="Fechar", command=janela.destroy).pack(side=tk.RIGHT)
+        janela.bind("<Escape>", lambda _e: janela.destroy())
+        janela.after(80, lambda: self._apply_windows_titlebar_dark(janela))
+        janela.after(200, lambda: self._apply_windows_titlebar_dark(janela))
 
     def _poll_queue(self) -> None:
         try:

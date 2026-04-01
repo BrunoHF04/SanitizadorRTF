@@ -107,14 +107,18 @@ Com isso é possível:
 ### 6) Interface (UX)
 
 - tema **dark** com contraste suave para uso prolongado;
-- no **Windows**, barra de título nativa (min/max/fechar) alinhada ao tema escuro (DWM);
+- no **Windows**, barra de título nativa (min/max/fechar) alinhada ao tema escuro (**DWM**), também nas janelas de ajuda;
 - **alerta sonoro** breve ao concluir: limpeza de um ficheiro, lote de pasta, ou higienização no banco (simulação ou UPDATE);
-- aba de banco reorganizada em blocos:
-  - `1) Conexão`
-  - `2) Escopo e filtros`
-  - `3) Execução`
-  - `4) Batch e auditoria`
-- botão `?` (manual rápido) e **Manual completo** com rolagem (níveis, marcadores, som, auditoria).
+- aba **Banco de dados**:
+  - **Área rolável** (canvas) para caber em ecrãs mais baixos, com barra vertical coerente com o resto da app;
+  - quatro **cartões colapsáveis** (clique no título **▶** / **▼** para expandir ou recolher):
+    - `1) Conexão` — credenciais, **Testar conexão** e **Carregar tabelas/colunas**;
+    - `2) Escopo e filtros` — tabela, coluna, limiares, **WHERE só por tamanho**, campos de relatório;
+    - `3) Execução` — opções RTF/varredura/UPDATE/validação, progresso, **Higienizar banco** e **Parar**;
+    - `4) Batch e auditoria` — Batch ID, relatório, CSV, rollback;
+  - por **defeito os quatro cartões vêm recolhidos** (só os títulos visíveis); a secção **URL gerada (opcional)** mantém-se sempre visível por baixo;
+- **Barras de rolagem** verticais com estilo escuro unificado (trilho alinhado ao fundo do registo `#262c37`, polegar mais largo e legível), na aba Banco, no **Registo** e nas janelas de ajuda;
+- botão **`?`** (manual rápido) e **Manual completo**: janelas em **tema escuro** (`Toplevel` com texto rolável, não `messagebox`); no manual rápido, **Escape** fecha e a janela é modal.
 
 ---
 
@@ -194,16 +198,17 @@ Executável gerado em:
 ## Uso no banco (passo a passo)
 
 1. Abra a aba **Banco de dados**.  
-2. No cartão **1) Conexão**, preencha host/porta/banco/utilizador/senha e clique em **Testar conexão**.  
+2. Expanda **1) Conexão** (clique na linha do título para mudar **▶** → **▼**), preencha host/porta/banco/utilizador/senha e clique em **Testar conexão**.  
 3. No mesmo cartão, clique em **Carregar tabelas/colunas**.  
-4. Selecione:
+4. Expanda **2) Escopo e filtros** e selecione:
    - tabela;
    - coluna de conteúdo;
-   - filtros (`Min chars`, `Min MB`) ou marque **Varredura geral**.
-5. (Opcional) Informe **Campos relatório**.
-6. Rode primeiro em simulação (desmarcando UPDATE).
-7. Marque UPDATE e execute.
-8. Guarde o **Batch ID** para relatório/rollback.
+   - filtros (`Min chars`, `Min MB`) ou marque **Varredura geral**;
+   - (opcional) **WHERE só por tamanho** quando usar limiares em colunas muito grandes.
+5. (Opcional) Informe **Campos relatório**.  
+6. Expanda **3) Execução**, rode primeiro em **simulação** (desmarcando **Aplicar UPDATE**).  
+7. Marque **Aplicar UPDATE** e **Higienizar banco** quando estiver pronto. Use **Parar** se precisar interromper.  
+8. O **Batch ID** pode ser copiado do registo; em **4) Batch e auditoria** use relatório, CSV ou **Rollback**.
 
 ---
 
