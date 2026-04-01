@@ -249,17 +249,18 @@ class App(tk.Tk):
             bordercolor=border_soft,
             lightcolor=border_soft,
             darkcolor=border_soft,
-            tabmargins=(6, 6, 6, 0),
+            tabmargins=(2, 2, 2, 0),
         )
         style.configure(
             "Dark.TNotebook.Tab",
             background="#2a3040",
             foreground="#c9d3e7",
-            padding=(14, 8),
+            padding=(8, 2),
             bordercolor=border_soft,
             lightcolor=border_soft,
             darkcolor=border_soft,
             borderwidth=1,
+            font=("TkDefaultFont", 9),
         )
         style.map(
             "Dark.TNotebook.Tab",
@@ -308,8 +309,8 @@ class App(tk.Tk):
             command=self._mostrar_manual_completo,
         ).pack(side=tk.RIGHT, padx=(8, 0))
 
-        regras = ttk.LabelFrame(frm, text="Regras avançadas de limpeza", padding=8)
-        regras.pack(fill=tk.X, **pad)
+        regras = ttk.LabelFrame(frm, text="Regras avançadas de limpeza", padding=6)
+        regras.pack(fill=tk.X, padx=10, pady=(4, 6))
         rr = ttk.Frame(regras)
         rr.pack(fill=tk.X)
         ttk.Label(rr, text="Nível:").pack(side=tk.LEFT)
@@ -329,7 +330,7 @@ class App(tk.Tk):
         ttk.Button(rr, text="Carregar JSON...", command=self._carregar_markers_json).pack(side=tk.LEFT)
 
         notebook = ttk.Notebook(frm, style="Dark.TNotebook")
-        notebook.pack(fill=tk.BOTH, expand=True, **pad)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(2, 8))
 
         aba_arquivo = ttk.Frame(notebook, padding=10)
         aba_pasta = ttk.Frame(notebook, padding=10)
@@ -482,11 +483,19 @@ class App(tk.Tk):
         db1b.pack(fill=tk.X, pady=(8, 0))
         ttk.Label(db1b, text="Usuário").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._db_user = tk.StringVar()
-        ttk.Entry(db1b, textvariable=self._db_user, width=22).grid(row=0, column=1, sticky="w", padx=(0, 14))
+        ttk.Entry(db1b, textvariable=self._db_user, width=18).grid(row=0, column=1, sticky="w", padx=(0, 12))
         ttk.Label(db1b, text="Senha").grid(row=0, column=2, sticky="w", padx=(0, 6))
         self._db_pass = tk.StringVar()
-        ttk.Entry(db1b, textvariable=self._db_pass, show="*").grid(row=0, column=3, sticky="ew")
-        db1b.columnconfigure(3, weight=1)
+        ttk.Entry(db1b, textvariable=self._db_pass, show="*", width=20).grid(
+            row=0, column=3, sticky="w", padx=(0, 8)
+        )
+        db1b.columnconfigure(4, weight=1)
+        ttk.Button(db1b, text="Testar conexão", command=self._testar_conexao_banco).grid(
+            row=0, column=5, sticky="e", padx=(10, 6)
+        )
+        ttk.Button(db1b, text="Carregar tabelas/colunas", command=self._carregar_metadata_banco).grid(
+            row=0, column=6, sticky="e"
+        )
 
         scope_box = ttk.LabelFrame(f3, text="2) Escopo e filtros", padding=8)
         scope_box.pack(fill=tk.X, pady=(8, 0))
@@ -541,28 +550,29 @@ class App(tk.Tk):
         run_box.pack(fill=tk.X, pady=(8, 0))
         run_checks = ttk.Frame(run_box)
         run_checks.pack(fill=tk.X)
-        run_checks_2 = ttk.Frame(run_box)
-        run_checks_2.pack(fill=tk.X, pady=(6, 0))
         self._db_only_rtf = tk.BooleanVar(value=True)
-        ttk.Checkbutton(run_checks, text="Apenas registros que parecem RTF", variable=self._db_only_rtf).pack(side=tk.LEFT)
+        ttk.Checkbutton(run_checks, text="Apenas registros que parecem RTF", variable=self._db_only_rtf).pack(
+            side=tk.LEFT
+        )
         self._db_full_scan = tk.BooleanVar(value=False)
-        ttk.Checkbutton(run_checks, text="Varredura geral", variable=self._db_full_scan).pack(side=tk.LEFT, padx=(18, 0))
+        ttk.Checkbutton(run_checks, text="Varredura geral", variable=self._db_full_scan).pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
         self._db_execute = tk.BooleanVar(value=False)
-        ttk.Checkbutton(run_checks_2, text="Aplicar UPDATE", variable=self._db_execute).pack(side=tk.LEFT)
+        ttk.Checkbutton(run_checks, text="Aplicar UPDATE", variable=self._db_execute).pack(side=tk.LEFT, padx=(12, 0))
         self._db_strict_validation = tk.BooleanVar(value=True)
-        ttk.Checkbutton(run_checks_2, text="Validação RTF estrita", variable=self._db_strict_validation).pack(side=tk.LEFT, padx=(18, 0))
+        ttk.Checkbutton(run_checks, text="Validação RTF estrita", variable=self._db_strict_validation).pack(
+            side=tk.LEFT, padx=(12, 0)
+        )
 
-        run_progress = ttk.Frame(run_box)
-        run_progress.pack(fill=tk.X, pady=(8, 0))
+        run_bar = ttk.Frame(run_box)
+        run_bar.pack(fill=tk.X, pady=(8, 0))
         self._db_progress_text = tk.StringVar(value="Progresso: parado")
-        ttk.Label(run_progress, textvariable=self._db_progress_text, foreground="#aeb4c0").pack(side=tk.LEFT)
-
-        run_actions = ttk.Frame(run_box)
-        run_actions.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(run_actions, text="Carregar tabelas/colunas", command=self._carregar_metadata_banco).pack(side=tk.LEFT)
-        ttk.Button(run_actions, text="Testar conexão", command=self._testar_conexao_banco).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(run_actions, text="Parar", command=self._parar_processamento_banco).pack(side=tk.RIGHT)
-        ttk.Button(run_actions, text="Higienizar banco", command=self._processar_banco).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(run_bar, text="Parar", command=self._parar_processamento_banco).pack(side=tk.RIGHT)
+        ttk.Button(run_bar, text="Higienizar banco", command=self._processar_banco).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Label(run_bar, textvariable=self._db_progress_text, foreground="#aeb4c0").pack(
+            side=tk.LEFT, fill=tk.X, expand=True, anchor=tk.W
+        )
 
         audit_box = ttk.LabelFrame(f3, text="4) Batch e auditoria", padding=8)
         audit_box.pack(fill=tk.X, pady=(8, 0))
@@ -800,8 +810,8 @@ class App(tk.Tk):
             "- Para higienizar registros diretamente no PostgreSQL.\n\n"
             "Passo a passo recomendado:\n"
             "1. Preencha Host, Porta, Banco, Usuário e Senha.\n"
-            "2. Clique em 'Testar conexão'.\n"
-            "3. Clique em 'Carregar tabelas/colunas'.\n"
+            "2. Na secção 1) Conexão, clique em 'Testar conexão'.\n"
+            "3. No mesmo bloco, clique em 'Carregar tabelas/colunas'.\n"
             "4. Selecione tabela e coluna de conteúdo.\n"
             "5. Ajuste filtros (Min chars, Min MB, limite).\n"
             "6. Rode primeiro em simulação (UPDATE desmarcado).\n"

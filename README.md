@@ -194,8 +194,8 @@ Executável gerado em:
 ## Uso no banco (passo a passo)
 
 1. Abra a aba **Banco de dados**.  
-2. Preencha conexão e clique em **Testar conexão**.  
-3. Clique em **Carregar tabelas/colunas**.  
+2. No cartão **1) Conexão**, preencha host/porta/banco/utilizador/senha e clique em **Testar conexão**.  
+3. No mesmo cartão, clique em **Carregar tabelas/colunas**.  
 4. Selecione:
    - tabela;
    - coluna de conteúdo;
