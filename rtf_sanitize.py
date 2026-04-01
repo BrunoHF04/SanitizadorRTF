@@ -14,19 +14,24 @@ MARKER_DDE_BOOKMARK = r"{\*\bkmkstart __DdeLink__"
 # Marcadores usados em precisa_limpeza / SELECT no banco e no fallback de corte tardio.
 DEFAULT_MARKERS = [
     MARKER_DDE_BOOKMARK,
-    r"{\*\shppict",  # Início de formas/desenhos corrompidos
+    r"{\*\shppict",  # Formas + imagem (Word/LibreOffice)
+    r"{\nonshppict",  # Fallback WMF/PNG após shppict (ficheiros muito grandes)
+    r"{\pict{",  # Grupo \pict sem \* (filho de shppict/nonshppict ou solto)
     r"{\*\objdata",  # Objetos OLE (planilhas coladas etc.) que incham
-    r"{\*\pict",  # Imagens puras que podem repete-se em loop
+    r"{\*\pict",  # Destino \*\pict
 ]
 # Remoção de grupos pict/obj/shppict pode apagar imagens — só automática acima deste tamanho.
 MIN_BYTES_HEAVY_RTF_CLEANUP = 5 * 1024 * 1024
 # Bloco contíguo só com hex (sem estrutura RTF no meio) típico de lixo/corrupção.
 HEX_ORPHAN_MIN_RUN = 500_000
 
+# Ordem: envolver “shape” antes do pict interno.
 _HEAVY_GROUP_PREFIXES = (
     r"{\*\shppict",
+    r"{\nonshppict",
     r"{\*\objdata",
     r"{\*\pict",
+    r"{\pict{",
 )
 _RE_DDE_BKMK = re.compile(r"\{\\\*\\bkmk(?:start|end)\s+__DdeLink__[^{}]*\}")
 SAFE_LEVEL = "seguro"
@@ -119,8 +124,8 @@ def _remove_groups_by_prefixes(text: str, prefixes: tuple[str, ...]) -> str:
 
 def _find_hex_orphan_run_start(text: str, min_run: int = HEX_ORPHAN_MIN_RUN) -> int | None:
     """
-    Localiza o início do primeiro trecho contíguo com comprimento >= min_run
-    contendo apenas [0-9A-Fa-f] (sem chaves, contrabarra nem outros tokens RTF no meio).
+    Localiza o início do primeiro trecho com >= min_run dígitos hex [0-9A-Fa-f].
+    Espaço, tab e fins de linha entre dígitos são ignorados (pngblip com quebras de linha).
     """
     if min_run <= 0 or len(text) < min_run:
         return None
@@ -129,13 +134,17 @@ def _find_hex_orphan_run_start(text: str, min_run: int = HEX_ORPHAN_MIN_RUN) -> 
     run_start = 0
     run_len = 0
     hex_set = frozenset("0123456789abcdefABCDEF")
+    ws = frozenset(" \t\r\n\f\v")
     while i < n:
-        if text[i] in hex_set:
+        ch = text[i]
+        if ch in hex_set:
             if run_len == 0:
                 run_start = i
             run_len += 1
             if run_len >= min_run:
                 return run_start
+            i += 1
+        elif ch in ws:
             i += 1
         else:
             run_len = 0
@@ -159,9 +168,10 @@ def limpar_arquivo_rtf(
     """
     Remove blocos DDE/bookmark; em níveis superiores, metadados RTF auxiliares.
 
-    Em modo agressivo, com conteúdo acima de ~5 MB, remove também grupos
-    \\*\\pict, \\*\\objdata e \\*\\shppict (pode tirar imagens/OLE embutidos).
-    Nesse nível, detecta “massas” hexadecimais órfãs (>=500k caracteres só 0-9A-F)
+    Em modo agressivo, com conteúdo acima de ~5 MB, remove também grupos de
+    imagem/OLE: \\*\\shppict, nonshppict, \\*\\pict, \\pict{ e \\*\\objdata.
+    Nesse nível, detecta “massas” hexadecimais órfãs (>=500k dígitos hex, com
+    espaços/newlines opcionais entre dígitos)
     e trunca antes delas. O fallback de corte tardio usa o primeiro marcador de
     `markers` (ou DEFAULT_MARKERS) que apareça nos últimos 10%% do ficheiro.
 

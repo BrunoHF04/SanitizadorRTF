@@ -10,21 +10,15 @@ Ferramenta para higienizar conteúdos RTF/TXT com corrupção por metadados de D
 
 ## Problema que a ferramenta resolve
 
-Em alguns cenários, o conteúdo RTF passa a conter blocos repetitivos e invisíveis no final do texto, geralmente iniciando em:
+Em alguns cenários, o conteúdo RTF/TXT fica com:
 
-`{\*\bkmkstart __DdeLink__`
+- **DDE / bookmarks** repetitivos (`{\*\bkmkstart __DdeLink__` …);
+- **Metadados** RTF redundantes (generator, rsidtbl, etc.);
+- **Imagens e OLE** embutidos em hex (muito comuns em RTF exportado por **LibreOffice/Collabora**: `{\*\shppict` + `{\nonshppict{\pict{` + `pngblip`/binário), inchando o ficheiro para **dezenas ou centenas de MB** sem aumentar o texto legível.
 
-Isso causa:
+Consequências típicas: travamentos em editores, timeouts e erros de memória em consultas ao PostgreSQL.
 
-- arquivos com dezenas de MB sem aumento real do texto visível;
-- travamentos em editores;
-- erros de memória em ferramentas de banco.
-
-A estratégia adotada é cirúrgica:
-
-1. localizar a **primeira ocorrência** do marcador;
-2. manter somente o conteúdo anterior;
-3. fechar os grupos RTF pendentes de forma estrutural.
+A limpeza combina **remoção de grupos RTF** (conforme o **nível** escolhido), **deteção de massas hexadecimais** suspeitas e **corte tardio** quando um marcador conhecido aparece nos últimos 10% do documento, com **fecho de chaves** para manter estrutura básica.
 
 ---
 
@@ -40,7 +34,7 @@ A estratégia adotada é cirúrgica:
 ## Estrutura do projeto
 
 - `rtf_sanitize.py`  
-  Núcleo de higienização de string RTF/TXT.
+  Núcleo de higienização: níveis `seguro` / `intermediario` / `agressivo`, `DEFAULT_MARKERS`, limiar **5 MB** para remoção pesada de pict/OLE, deteção de hex órfão (500k+ dígitos).
 
 - `db_sanitize.py`  
   Operações de banco: varredura, update, auditoria por lote, relatório e rollback.
@@ -106,19 +100,36 @@ Com isso é possível:
 
 ### 5) Regras avançadas de marcadores
 
-- campo **Marcadores extras (; )** na GUI para novos padrões;
-- carregamento por JSON (`{"markers": ["..."]}` ou `["..."]`);
-- marcador padrão DDE permanece sempre ativo.
+- campo **Marcadores extras (;)** e JSON (`{"markers": ["..."]}` ou `["..."]`);
+- os **marcadores padrão** (DDE, shppict, nonshppict, `{\pict{`, objdata, `\*\pict`) incorporam-se sempre à lista ativa na GUI e na lógica de deteção.
 
 ### 6) Interface (UX)
 
 - tema **dark** com contraste suave para uso prolongado;
+- no **Windows**, barra de título nativa (min/max/fechar) alinhada ao tema escuro (DWM);
+- **alerta sonoro** breve ao concluir: limpeza de um ficheiro, lote de pasta, ou higienização no banco (simulação ou UPDATE);
 - aba de banco reorganizada em blocos:
   - `1) Conexão`
   - `2) Escopo e filtros`
   - `3) Execução`
   - `4) Batch e auditoria`
-- botão `?` (manual rápido) e **Manual completo** com rolagem.
+- botão `?` (manual rápido) e **Manual completo** com rolagem (níveis, marcadores, som, auditoria).
+
+---
+
+## Níveis de higienização
+
+| Nível | O que faz |
+|-------|-----------|
+| **seguro** | Remove apenas grupos de bookmark **DDE** associados a `__DdeLink__` (regex interna). Não remove imagens. |
+| **intermediario** | Tudo do seguro + remove grupos auxiliares (`\*\generator`, `\*\userprops`, `\*\xmlnstbl`, `\*\rsidtbl`, `\*\themedata`, `\*\colorschememapping`). |
+| **agressivo** | Tudo do intermediário + se o texto ainda tiver **> ~5 MB**: remove grupos completos que começam em `\*\shppict`, `\nonshppict`, `\*\objdata`, `\*\pict`, `{\pict{` (**elimina imagens/OLE** embutidos). Em qualquer tamanho: se existir uma massa **≥ 500 000** dígitos hex (com espaços/newlines entre dígitos), **trunca antes** dessa massa. Pode aplicar-se corte tardio se um marcador padrão aparecer nos **últimos 10%** do ficheiro. |
+
+**Regra dos ~5 MB:** a remoção de blocos pict/obj/shppict (que apaga figuras) só corre no nível agressivo quando o conteúdo já ultrapassa esse limiar — ficheiros pequenos não são “esmiuçados” da mesma forma.
+
+**Marcadores padrão** (para filtros SQL, `precisa_limpeza` e fallback de corte): bookmark DDE, `\*\shppict`, `\nonshppict`, `{\pict{`, `\*\objdata`, `\*\pict`. É possível acrescentar marcadores na GUI (**extras** ou JSON).
+
+**PostgreSQL:** o conteúdo anterior a cada UPDATE fica em `rtf_sanitize_audit.old_content`; use **rollback** por `batch_id` se um lote agressivo não for o desejado.
 
 ---
 
@@ -127,8 +138,8 @@ Com isso é possível:
 ## 1. Clonar e entrar no projeto
 
 ```bash
-git clone <URL_DO_REPOSITORIO>
-cd d-Conversor-txt-docx
+git clone https://github.com/BrunoHF04/SanitizadorRTF.git
+cd SanitizadorRTF
 ```
 
 ## 2. Criar ambiente virtual (opcional, recomendado)
@@ -245,12 +256,15 @@ Campos principais:
 
 ## Script CLI (opcional)
 
-Para manutenção em linha de comando:
+Para manutenção em linha de comando (`documento_mesclado` no PostgreSQL). O `WHERE` considera `LENGTH(conteudo)` **ou** qualquer marcador em `DEFAULT_MARKERS`.
 
 ```bash
 python batch_sanitize_rtf.py
 python batch_sanitize_rtf.py --execute --min-length 1000000
+python batch_sanitize_rtf.py --execute --cleaning-level agressivo --min-length 500000
 ```
+
+`--cleaning-level`: `seguro` (padrão) | `intermediario` | `agressivo`.
 
 ---
 
@@ -266,9 +280,10 @@ python batch_sanitize_rtf.py --execute --min-length 1000000
 
 ## Limitações e notas
 
-- A limpeza é baseada no marcador DDE/bookmark conhecido.
-- Registros grandes sem esse padrão não serão alterados.
-- O processamento em banco depende de permissões de leitura/escrita na tabela alvo.
+- **Nível seguro** só trata DDE/bookmarks; ficheiros enormes só por imagens precisam de **agressivo** (ou outra ferramenta).
+- **Agressivo** remove **figuras e objetos** embutidos quando o conteúdo ultrapassa ~5 MB; o texto da ata costuma manter-se, mas faça **simulação** e use **rollback** no banco se necessário.
+- O critério de candidatos no banco usa **marcadores padrão + tamanho** (`--min-length`); sem correspondência, o registo não entra no lote.
+- Permissões de leitura/escrita na tabela alvo e extensão `psycopg2` são necessárias.
 
 ---
 
