@@ -530,6 +530,12 @@ class App(tk.Tk):
             foreground="#aeb4c0",
             wraplength=900,
         ).pack(anchor=tk.W, pady=(6, 0))
+        self._db_sql_size_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            scope_box,
+            text="WHERE só por tamanho (sem marcadores no SQL) — ative com Min MB/chars: evita position() lento em colunas gigantes",
+            variable=self._db_sql_size_only,
+        ).pack(anchor=tk.W, pady=(8, 0))
 
         run_box = ttk.LabelFrame(f3, text="3) Execução", padding=8)
         run_box.pack(fill=tk.X, pady=(8, 0))
@@ -675,7 +681,9 @@ class App(tk.Tk):
             "  massas enormes só com hex (500k+ dígitos). APAGA fotos embutidas no RTF.\n"
             "  No PostgreSQL, o conteúdo anterior fica na auditoria (rollback por Batch ID).\n\n"
             "Marcadores padrão (deteção no texto e no banco): DDE, shppict, nonshppict,\n"
-            "\\pict{, objdata, \\*\\pict. Pode acrescentar mais com Marcadores extras ou JSON.\n\n"
+            "\\pict{, objdata, \\*\\pict. Pode acrescentar mais com Marcadores extras ou JSON.\n"
+            "Com Min MB/chars, use 'WHERE só por tamanho' para o PostgreSQL não fazer\n"
+            "position(marcador) em cada linha (muito lento em conteúdos de 100 MB).\n\n"
             "1) Aba Arquivo\n"
             "- Escolha o Nível antes de limpar.\n"
             "- Limpar e guardar como; .bak opcional ao sobrescrever.\n"
@@ -802,6 +810,7 @@ class App(tk.Tk):
             "Campos importantes:\n"
             "- Apenas registros que parecem RTF: restringe para conteúdos com cara de RTF.\n"
             "- Varredura geral: ignora filtros de tamanho e analisa toda a tabela.\n"
+            "- WHERE só por tamanho: SQL sem marcadores; use com Min MB (recomendado p/ ficheiros enormes).\n"
             "- Validar RTF após limpeza (estrito): evita gravar saída inválida.\n"
             "- Commit por lote: define frequência de commit durante UPDATE.\n"
             "- Parar processamento: envia solicitação de interrupção segura.\n\n"
@@ -1142,12 +1151,34 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showwarning("Commit por lote", "Informe um número inteiro > 0.")
             return
+        sql_size_only = self._db_sql_size_only.get() and not full_scan
+        if sql_size_only and min_length <= 0 and min_mb is None:
+            messagebox.showwarning(
+                "Filtro SQL",
+                "Marque 'WHERE só por tamanho' apenas com Min chars > 0 ou Min MB preenchido,\n"
+                "ou desmarque essa opção para usar marcadores no SQL.",
+            )
+            return
         self._stop_requested.clear()
-        self._set_progress_status("Progresso: consultando registros", animate=True)
+        if execute:
+            self._set_progress_status("Progresso: prévia — analisando candidatos", animate=True)
+        else:
+            self._set_progress_status("Progresso: simulando higienização", animate=True)
 
         def job() -> None:
             try:
-                self._queue.put(("log", "Consultando registros candidatos no banco..."))
+                if execute:
+                    self._queue.put(
+                        (
+                            "log",
+                            "Prévia (1.ª passagem): a percorrer candidatos no PostgreSQL. "
+                            "Com Varredura geral isto lê a tabela inteira; em cada linha simula a limpeza "
+                            "(pode demorar muitos minutos se houver milhares de registos ou conteúdos enormes). "
+                            "O contador na barra de progresso atualiza ao processar cada registo.",
+                        )
+                    )
+                else:
+                    self._queue.put(("log", "Simulação: a analisar registos candidatos no banco..."))
                 if execute:
                     preview_lines: list[str] = []
                     total_preview, skipped_preview, _ = sanitize_documento_mesclado(
@@ -1166,6 +1197,15 @@ class App(tk.Tk):
                         batch_size=batch_size,
                         strict_rtf_validation=strict_rtf_validation,
                         cleaning_level=cleaning_level,
+                        sql_where_size_only=sql_size_only,
+                        should_stop=lambda: self._stop_requested.is_set(),
+                        progress=lambda s, u, k: self.after(
+                            0,
+                            lambda: self._set_progress_status(
+                                f"Progresso: prévia lidos={s} a alterar={u} ignorados={k}",
+                                animate=True,
+                            ),
+                        ),
                         log=lambda m: preview_lines.append(m) if len(preview_lines) < 20 else None,
                     )
                     if total_preview == 0:
@@ -1224,6 +1264,7 @@ class App(tk.Tk):
                         batch_size=batch_size,
                         strict_rtf_validation=strict_rtf_validation,
                         cleaning_level=cleaning_level,
+                        sql_where_size_only=sql_size_only,
                         should_stop=lambda: self._stop_requested.is_set(),
                         progress=lambda s, u, k: self.after(
                             0, lambda: self._set_progress_status(
@@ -1266,6 +1307,7 @@ class App(tk.Tk):
                         batch_size=batch_size,
                         strict_rtf_validation=strict_rtf_validation,
                         cleaning_level=cleaning_level,
+                        sql_where_size_only=sql_size_only,
                         should_stop=lambda: self._stop_requested.is_set(),
                         progress=lambda s, u, k: self.after(
                             0, lambda: self._set_progress_status(

@@ -79,6 +79,7 @@ A limpeza combina **remoção de grupos RTF** (conforme o **nível** escolhido),
 - filtros de seleção:
   - `Min chars`
   - `Min MB`
+  - **WHERE só por tamanho** (opcional): o `WHERE` do PostgreSQL usa apenas os limiares de tamanho, **sem** `position(marcador)` — muito mais rápido quando a coluna tem dezenas de MB por linha (caso contrário o motor pode fazer várias procuras de texto em cada registo).
   - `Varredura geral (toda a tabela)` (ignora filtros e analisa todos os registros);
 - opção **Apenas registros que parecem RTF**;
 - opção **Validar RTF após limpeza (estrito)** para evitar gravação inválida;

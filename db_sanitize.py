@@ -10,7 +10,6 @@ from uuid import uuid4
 from rtf_sanitize import (
     SAFE_LEVEL,
     DEFAULT_MARKERS,
-    analisar_limpeza,
     limpar_arquivo_rtf,
     parece_rtf,
     validar_estrutura_rtf,
@@ -48,10 +47,14 @@ def sanitize_documento_mesclado(
     strict_rtf_validation: bool = True,
     cleaning_level: str = SAFE_LEVEL,
     log: Callable[[str], None] | None = None,
+    sql_where_size_only: bool = False,
 ) -> tuple[int, int, str | None]:
     """
     Higieniza documento_mesclado.conteudo no PostgreSQL.
     Retorna (alterados_ou_seriam_alterados, ignorados_sem_mudanca).
+
+    sql_where_size_only: se True (e sem varredura geral), o WHERE usa só Min chars / Min MB,
+    sem position(marcador) — recomendado para colunas muito grandes.
     """
     if not database_url.strip():
         raise ValueError("DATABASE_URL é obrigatório.")
@@ -128,6 +131,24 @@ def sanitize_documento_mesclado(
         params: list[object] = []
         if full_scan:
             where_sql = "1=1"
+        elif sql_where_size_only:
+            # Evita position(marcador) em colunas gigantes — muito mais barato no PostgreSQL.
+            where_parts: list[str] = []
+            if min_length > 0:
+                where_parts.append(
+                    "LENGTH(src.{content_column}::text) > %s".format(content_column=content_column)
+                )
+                params.append(min_length)
+            if min_megabytes is not None and min_megabytes > 0:
+                where_parts.append(
+                    "OCTET_LENGTH(src.{content_column}::text) > %s".format(content_column=content_column)
+                )
+                params.append(int(min_megabytes * 1024 * 1024))
+            if not where_parts:
+                raise ValueError(
+                    "sql_where_size_only exige Min chars > 0 ou Min MB > 0 (defina pelo menos um filtro de tamanho)."
+                )
+            where_sql = " OR ".join(where_parts)
         else:
             marker_clauses = []
             for marker in markers:
@@ -165,6 +186,7 @@ def sanitize_documento_mesclado(
         updates_since_commit = 0
         try:
             read_cur.execute(sql, params)
+            _log("Consulta SQL aos candidatos concluída; a processar cada registo (transferência + limpeza em memória).")
             for row in read_cur:
                 if should_stop and should_stop():
                     _log("Processamento interrompido por solicitação do usuário.")
@@ -180,13 +202,12 @@ def sanitize_documento_mesclado(
                     skipped += 1
                     _progress(scanned, updated, skipped)
                     continue
-                analise = analisar_limpeza(conteudo, markers=markers, cleaning_level=cleaning_level)
                 limpo = limpar_arquivo_rtf(conteudo, markers=markers, cleaning_level=cleaning_level)
                 if limpo == conteudo:
                     skipped += 1
                     _progress(scanned, updated, skipped)
                     continue
-                if strict_rtf_validation and analise["was_rtf_before"] and not validar_estrutura_rtf(limpo):
+                if strict_rtf_validation and parece_rtf(conteudo or "") and not validar_estrutura_rtf(limpo):
                     skipped += 1
                     _log(f"ref={row_id} pulado: saída RTF inválida após limpeza.")
                     _progress(scanned, updated, skipped)
