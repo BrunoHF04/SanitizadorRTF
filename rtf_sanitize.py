@@ -6,11 +6,25 @@ Uso em leitura, gravação ou jobs em lote sobre o campo conteudo.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 # Primeira ocorrência deste trecho marca o início do lixo repetitivo (DDE links).
 MARKER_DDE_BOOKMARK = r"{\*\bkmkstart __DdeLink__"
 DEFAULT_MARKERS = [MARKER_DDE_BOOKMARK]
+_RE_DDE_BKMK = re.compile(r"\{\\\*\\bkmk(?:start|end)\s+__DdeLink__[^{}]*\}")
+SAFE_LEVEL = "seguro"
+INTERMEDIATE_LEVEL = "intermediario"
+AGGRESSIVE_LEVEL = "agressivo"
+
+_INTERMEDIATE_GROUP_PREFIXES = (
+    r"{\*\generator",
+    r"{\*\userprops",
+    r"{\*\xmlnstbl",
+    r"{\*\rsidtbl",
+    r"{\*\themedata",
+    r"{\*\colorschememapping",
+)
 
 
 def _calcular_grupos_abertos(rtf: str) -> int:
@@ -51,22 +65,74 @@ def _encontrar_primeiro_marcador(conteudo_bruto: str, markers: list[str] | None 
     return melhor_idx, melhor_marker
 
 
-def limpar_arquivo_rtf(conteudo_bruto: str, markers: list[str] | None = None) -> str:
+def _find_group_end(text: str, start_idx: int) -> int:
+    depth = 0
+    i = start_idx
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _remove_groups_by_prefixes(text: str, prefixes: tuple[str, ...]) -> str:
+    out = text
+    changed = True
+    while changed:
+        changed = False
+        for pfx in prefixes:
+            idx = out.find(pfx)
+            if idx == -1:
+                continue
+            end = _find_group_end(out, idx)
+            if end == -1:
+                continue
+            out = out[:idx] + out[end + 1 :]
+            changed = True
+    return out
+
+
+def limpar_arquivo_rtf(
+    conteudo_bruto: str,
+    markers: list[str] | None = None,
+    cleaning_level: str = SAFE_LEVEL,
+) -> str:
     """
-    Remove tudo após a primeira ocorrência de MARKER_DDE_BOOKMARK e garante
-    que os grupos RTF pendentes sejam fechados.
+    Remove blocos DDE/bookmark conhecidos sem truncar o conteúdo visível.
+
+    Se houver marcador customizado (via markers) e ele surgir muito no fim do
+    documento, aplica corte tardio como fallback.
     """
     if not conteudo_bruto:
         return conteudo_bruto
 
-    idx, _ = _encontrar_primeiro_marcador(conteudo_bruto, markers)
-    if idx == -1:
-        return conteudo_bruto
+    conteudo_limpo = conteudo_bruto
 
-    conteudo_limpo = conteudo_bruto[:idx].rstrip()
-    grupos_abertos = _calcular_grupos_abertos(conteudo_limpo)
-    if grupos_abertos > 0:
-        conteudo_limpo += "}" * grupos_abertos
+    # Regra principal: remove apenas os grupos de bookmark DDE.
+    conteudo_limpo = _RE_DDE_BKMK.sub("", conteudo_limpo)
+
+    if cleaning_level in (INTERMEDIATE_LEVEL, AGGRESSIVE_LEVEL):
+        conteudo_limpo = _remove_groups_by_prefixes(conteudo_limpo, _INTERMEDIATE_GROUP_PREFIXES)
+
+    # Fallback conservador: corte apenas se o marcador aparecer bem no fim.
+    idx, _ = _encontrar_primeiro_marcador(conteudo_limpo, markers)
+    if idx != -1:
+        ratio = idx / max(len(conteudo_limpo), 1)
+        if ratio >= 0.90:
+            truncado = conteudo_limpo[:idx].rstrip()
+            grupos_abertos = _calcular_grupos_abertos(truncado)
+            if grupos_abertos > 0:
+                truncado += "}" * grupos_abertos
+            conteudo_limpo = truncado
 
     return conteudo_limpo
 
@@ -80,24 +146,33 @@ def validar_estrutura_rtf(conteudo: str) -> bool:
     return _calcular_grupos_abertos(conteudo) == 0
 
 
-def analisar_limpeza(conteudo_bruto: str, markers: list[str] | None = None) -> dict[str, object]:
+def analisar_limpeza(
+    conteudo_bruto: str,
+    markers: list[str] | None = None,
+    cleaning_level: str = SAFE_LEVEL,
+) -> dict[str, object]:
     idx, marker = _encontrar_primeiro_marcador(conteudo_bruto, markers)
-    limpo = limpar_arquivo_rtf(conteudo_bruto, markers=markers)
-    removido = ""
-    if idx != -1:
-        removido = conteudo_bruto[idx:]
+    limpo = limpar_arquivo_rtf(conteudo_bruto, markers=markers, cleaning_level=cleaning_level)
+    # Prévia por diferença de comprimento (evita assumir truncamento total).
+    removed_len = max(len(conteudo_bruto) - len(limpo), 0)
+    preview_start = ""
+    preview_end = ""
+    if removed_len > 0 and idx != -1:
+        preview_start = conteudo_bruto[idx : idx + 220]
+        preview_end = conteudo_bruto[max(len(conteudo_bruto) - 220, 0) :]
     return {
         "marker_found": idx != -1,
         "marker_used": marker,
         "marker_index": idx,
         "before_len": len(conteudo_bruto or ""),
         "after_len": len(limpo or ""),
-        "removed_len": len(removido),
-        "removed_preview_start": removido[:220],
-        "removed_preview_end": removido[-220:] if removido else "",
+        "removed_len": removed_len,
+        "removed_preview_start": preview_start,
+        "removed_preview_end": preview_end,
         "was_rtf_before": parece_rtf(conteudo_bruto or ""),
         "is_structurally_valid_before": validar_estrutura_rtf(conteudo_bruto or ""),
         "is_structurally_valid_after": validar_estrutura_rtf(limpo or ""),
+        "cleaning_level": cleaning_level,
     }
 
 
@@ -142,6 +217,9 @@ def parece_rtf(conteudo: str) -> bool:
 __all__ = [
     "MARKER_DDE_BOOKMARK",
     "DEFAULT_MARKERS",
+    "SAFE_LEVEL",
+    "INTERMEDIATE_LEVEL",
+    "AGGRESSIVE_LEVEL",
     "analisar_limpeza",
     "carregar_marcadores_de_json",
     "limpar_arquivo_rtf",

@@ -25,6 +25,8 @@ from db_sanitize import (
     test_postgres_connection,
 )
 from rtf_sanitize import (
+    INTERMEDIATE_LEVEL,
+    SAFE_LEVEL,
     DEFAULT_MARKERS,
     MARKER_DDE_BOOKMARK,
     analisar_limpeza,
@@ -270,6 +272,15 @@ class App(tk.Tk):
         regras.pack(fill=tk.X, **pad)
         rr = ttk.Frame(regras)
         rr.pack(fill=tk.X)
+        ttk.Label(rr, text="Nível:").pack(side=tk.LEFT)
+        self._cleaning_level = tk.StringVar(value=SAFE_LEVEL)
+        ttk.Combobox(
+            rr,
+            textvariable=self._cleaning_level,
+            values=[SAFE_LEVEL, INTERMEDIATE_LEVEL],
+            width=14,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Label(rr, text="Marcadores extras (;):").pack(side=tk.LEFT)
         self._markers_text = tk.StringVar(value="")
         ttk.Entry(rr, textvariable=self._markers_text).pack(
@@ -595,6 +606,8 @@ class App(tk.Tk):
             "- Clique em Limpar e guardar como.\n"
             "- Se salvar por cima do original, a opção .bak cria backup.\n\n"
             "Regras avançadas\n"
+            "- Nível 'seguro': remove apenas DDE/bookmarks.\n"
+            "- Nível 'intermediario': remove DDE + metadados auxiliares.\n"
             "- Use 'Marcadores extras (;)' para adicionar novos padrões.\n"
             "- Também é possível carregar marcadores por JSON.\n\n"
             "2) Aba Pasta (lote)\n"
@@ -835,8 +848,16 @@ class App(tk.Tk):
 
                 texto, modo = _ler_texto_preservando_bytes(po)
                 n_antes = len(texto)
-                analise = analisar_limpeza(texto, markers=self._markers_ativos())
-                limpo = limpar_arquivo_rtf(texto, markers=self._markers_ativos())
+                analise = analisar_limpeza(
+                    texto,
+                    markers=self._markers_ativos(),
+                    cleaning_level=self._cleaning_level.get(),
+                )
+                limpo = limpar_arquivo_rtf(
+                    texto,
+                    markers=self._markers_ativos(),
+                    cleaning_level=self._cleaning_level.get(),
+                )
                 n_depois = len(limpo)
                 _guardar_texto_preservando_bytes(pd, limpo)
 
@@ -1013,6 +1034,7 @@ class App(tk.Tk):
         content_col = self._db_content_col.get().strip() or "conteudo"
         report_cols = [c.strip() for c in self._db_report_cols.get().split(",") if c.strip()]
         markers = self._markers_ativos()
+        cleaning_level = self._cleaning_level.get()
         execute = self._db_execute.get()
         only_rtf = self._db_only_rtf.get()
         full_scan = self._db_full_scan.get()
@@ -1047,6 +1069,7 @@ class App(tk.Tk):
                         markers=markers,
                         batch_size=batch_size,
                         strict_rtf_validation=strict_rtf_validation,
+                        cleaning_level=cleaning_level,
                         log=lambda m: preview_lines.append(m) if len(preview_lines) < 20 else None,
                     )
                     if total_preview == 0:
@@ -1104,6 +1127,7 @@ class App(tk.Tk):
                         markers=markers,
                         batch_size=batch_size,
                         strict_rtf_validation=strict_rtf_validation,
+                        cleaning_level=cleaning_level,
                         should_stop=lambda: self._stop_requested.is_set(),
                         progress=lambda s, u, k: self.after(
                             0, lambda: self._set_progress_status(
@@ -1145,6 +1169,7 @@ class App(tk.Tk):
                         markers=markers,
                         batch_size=batch_size,
                         strict_rtf_validation=strict_rtf_validation,
+                        cleaning_level=cleaning_level,
                         should_stop=lambda: self._stop_requested.is_set(),
                         progress=lambda s, u, k: self.after(
                             0, lambda: self._set_progress_status(
@@ -1293,9 +1318,10 @@ class App(tk.Tk):
 
                 alterados = 0
                 markers = self._markers_ativos()
+                cleaning_level = self._cleaning_level.get()
                 for po in ficheiros:
                     texto, modo = _ler_texto_preservando_bytes(po)
-                    limpo = limpar_arquivo_rtf(texto, markers=markers)
+                    limpo = limpar_arquivo_rtf(texto, markers=markers, cleaning_level=cleaning_level)
                     if modo_lote == "new_folder":
                         rel = po.relative_to(base)
                         pd = destino_base / rel

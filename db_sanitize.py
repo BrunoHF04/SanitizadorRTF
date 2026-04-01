@@ -8,6 +8,7 @@ from typing import Callable
 from uuid import uuid4
 
 from rtf_sanitize import (
+    SAFE_LEVEL,
     DEFAULT_MARKERS,
     analisar_limpeza,
     limpar_arquivo_rtf,
@@ -45,6 +46,7 @@ def sanitize_documento_mesclado(
     progress: Callable[[int, int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     strict_rtf_validation: bool = True,
+    cleaning_level: str = SAFE_LEVEL,
     log: Callable[[str], None] | None = None,
 ) -> tuple[int, int, str | None]:
     """
@@ -178,8 +180,8 @@ def sanitize_documento_mesclado(
                     skipped += 1
                     _progress(scanned, updated, skipped)
                     continue
-                analise = analisar_limpeza(conteudo, markers=markers)
-                limpo = limpar_arquivo_rtf(conteudo, markers=markers)
+                analise = analisar_limpeza(conteudo, markers=markers, cleaning_level=cleaning_level)
+                limpo = limpar_arquivo_rtf(conteudo, markers=markers, cleaning_level=cleaning_level)
                 if limpo == conteudo:
                     skipped += 1
                     _progress(scanned, updated, skipped)
