@@ -8,7 +8,7 @@ Ferramenta para higienizar conteúdos RTF/TXT com corrupção por metadados de D
 ![Database](https://img.shields.io/badge/PostgreSQL-16%2B-4169E1?logo=postgresql&logoColor=white)
 ![License](https://img.shields.io/badge/Licen%C3%A7a-definir-lightgrey)
 
-Projeto **redesenhado por Bruno Fernandes** — [LinkedIn](https://www.linkedin.com/in/bruno-fernandes-ti)
+Projeto **desenvolvido por Bruno Fernandes** — [LinkedIn](https://www.linkedin.com/in/bruno-fernandes-ti)
 
 ---
 
