@@ -25,6 +25,7 @@ from db_sanitize import (
     test_postgres_connection,
 )
 from rtf_sanitize import (
+    AGGRESSIVE_LEVEL,
     INTERMEDIATE_LEVEL,
     SAFE_LEVEL,
     DEFAULT_MARKERS,
@@ -57,7 +58,8 @@ class App(tk.Tk):
         self.minsize(920, 620)
         self.geometry("1040x720")
         self.update_idletasks()
-        self._apply_windows_titlebar_dark()
+        self._schedule_windows_titlebar_dark()
+        self.bind("<Map>", lambda _e: self._apply_windows_titlebar_dark(), add="+")
 
         self._queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._last_batch_id = ""
@@ -70,26 +72,64 @@ class App(tk.Tk):
 
     def _apply_windows_titlebar_dark(self) -> None:
         """
-        Ativa modo escuro da barra de título no Windows 10/11.
-        Em outras plataformas, simplesmente ignora.
+        Barra de título nativa (minimizar/maximizar/fechar) no tema escuro.
+
+        No Tk, winfo_id() é o HWND do cliente interno; o DWM precisa do HWND
+        da janela top-level (GetParent), senão a API não altera a barra.
+        Opcionalmente aplica DWMWA_CAPTION_COLOR no Windows 11 22H2+ para
+        harmonizar com o fundo da app (#1f2128).
         """
         if os.name != "nt":
             return
         try:
-            hwnd = self.winfo_id()
-            value = ctypes.c_int(1)
-            dwmapi = ctypes.windll.dwmapi
-            # Windows 11/10 recentes usam 20; builds antigos usam 19.
-            for attr in (20, 19):
-                dwmapi.DwmSetWindowAttribute(
-                    ctypes.c_void_p(hwnd),
-                    ctypes.c_uint(attr),
-                    ctypes.byref(value),
-                    ctypes.sizeof(value),
+            wid = int(self.winfo_id())
+            hwnd = int(ctypes.windll.user32.GetParent(wid))
+            if hwnd == 0:
+                hwnd = wid
+
+            dark = ctypes.c_int(1)
+            dwm = ctypes.windll.dwmapi
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19
+            # Win11 / Win10 20H1+
+            if dwm.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                ctypes.byref(dark),
+                ctypes.sizeof(dark),
+            ) != 0:
+                dwm.DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY,
+                    ctypes.byref(dark),
+                    ctypes.sizeof(dark),
                 )
+
         except Exception:
-            # Falha aqui não deve impedir a abertura da aplicação.
+            return
+        # Windows 11 22H2+: cor da legenda; falha em builds antigas sem efeito na linha seguinte
+        try:
+            DWMWA_CAPTION_COLOR = 35
+            caption_bgr = ctypes.c_int(0x0028211F)  # #1f2128 (0x00BBGGRR)
+            dwm = ctypes.windll.dwmapi
+            wid = int(self.winfo_id())
+            hwnd = int(ctypes.windll.user32.GetParent(wid)) or wid
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CAPTION_COLOR,
+                ctypes.byref(caption_bgr),
+                ctypes.sizeof(caption_bgr),
+            )
+        except Exception:
             pass
+
+    def _schedule_windows_titlebar_dark(self) -> None:
+        """Reaplica DWM após o conteúdo existir — o HWND às vezes só estabiliza depois do map."""
+        if os.name != "nt":
+            return
+        self._apply_windows_titlebar_dark()
+        self.after(150, self._apply_windows_titlebar_dark)
+        self.after(450, self._apply_windows_titlebar_dark)
 
     def _apply_dark_theme(self) -> None:
         bg = "#1f2128"
@@ -277,7 +317,7 @@ class App(tk.Tk):
         ttk.Combobox(
             rr,
             textvariable=self._cleaning_level,
-            values=[SAFE_LEVEL, INTERMEDIATE_LEVEL],
+            values=[SAFE_LEVEL, INTERMEDIATE_LEVEL, AGGRESSIVE_LEVEL],
             width=14,
             state="readonly",
         ).pack(side=tk.LEFT, padx=(6, 12))
@@ -575,6 +615,32 @@ class App(tk.Tk):
         self._log.see(tk.END)
         self._log.configure(state=tk.DISABLED)
 
+    def _som_conclusao_limpeza(self) -> None:
+        """Som breve ao terminar limpeza/atualização (Windows: som padrão; resto: bell Tk)."""
+        try:
+            if os.name == "nt":
+                import winsound
+
+                winsound.MessageBeep(winsound.MB_OK)
+            else:
+                self.bell()
+        except Exception:
+            try:
+                self.bell()
+            except Exception:
+                pass
+
+    def _msg_limpeza_merece_som(self, title: str, text: str) -> bool:
+        """True para conclusões de higienização em ficheiro, pasta ou banco (não erros nem cancelamentos)."""
+        low = text.lower()
+        if title in ("Concluído", "Lote"):
+            return True
+        if title == "Banco":
+            if "cancelado" in low or "nenhuma mudança necessária" in low:
+                return False
+            return "atualizados:" in low or "simulados:" in low
+        return False
+
     def _animate_progress_text(self) -> None:
         if not self._progress_animating:
             return
@@ -608,6 +674,8 @@ class App(tk.Tk):
             "Regras avançadas\n"
             "- Nível 'seguro': remove apenas DDE/bookmarks.\n"
             "- Nível 'intermediario': remove DDE + metadados auxiliares.\n"
+            "- Nível 'agressivo': remove pict/objdata/grandes blocos hex (>5 MB)\n"
+            "  e pode apagar imagens/OLE. No banco, use rollback (old_content em audit).\n"
             "- Use 'Marcadores extras (;)' para adicionar novos padrões.\n"
             "- Também é possível carregar marcadores por JSON.\n\n"
             "2) Aba Pasta (lote)\n"
@@ -657,14 +725,22 @@ class App(tk.Tk):
         conteudo = (
             "SANITIZADOR RTF — MANUAL COMPLETO\n\n"
             "Objetivo\n"
-            "A aplicação remove blocos de lixo que começam em:\n"
-            r"{\*\bkmkstart __DdeLink__" "\n"
-            "Após encontrar a primeira ocorrência, o sistema mantém apenas a parte válida\n"
-            "anterior e fecha os grupos RTF pendentes.\n\n"
+            "A aplicação remove lixo DDE em marcadores __DdeLink__ e, conforme o nível,\n"
+            "metadados auxiliares, grupos \\\\*\\\\pict / \\\\*\\\\objdata / \\\\*\\\\shppict\n"
+            "(quando o arquivo tem mais de ~5 MB) e \"massas\" hexadecimais órfãs enormes.\n"
+            "O primeiro marcador conhecido que aparecer nos últimos 10% do texto pode\n"
+            "disparar corte tardio com fecho de chaves RTF.\n\n"
+            "Níveis de limpeza\n"
+            "- seguro: apenas DDE/bookmarks.\n"
+            "- intermediario: acima + grupos como \\\\*\\\\generator, \\\\*\\\\rsidtbl, etc.\n"
+            "- agressivo: acima + (se tamanho > ~5 MB) remoção de pict/obj/OLE inchados;\n"
+            "  mais corte antes de trechos com 500k+ caracteres só 0-9A-F (corrupção).\n"
+            "  Pode remover imagens embutidas — em lote no PostgreSQL o conteúdo anterior\n"
+            "  fica em rtf_sanitize_audit (old_content); use Rollback por Batch ID.\n\n"
             "Regras avançadas\n"
             "- Pode adicionar marcadores extras no topo da tela (separados por ';').\n"
             "- Pode carregar JSON com formato {\"markers\": [\"...\"]} ou [\"...\"].\n"
-            "- O marcador padrão de DDE continua sempre ativo.\n\n"
+            "- Os marcadores padrão (DDE, shppict, objdata, pict) participam da deteção.\n\n"
             "========================================\n"
             "1) ABA ARQUIVO\n"
             "========================================\n"
@@ -716,7 +792,7 @@ class App(tk.Tk):
             "========================================\n"
             "- Ver relatório: mostra registros alterados por um Batch ID.\n"
             "- Exportar CSV: gera arquivo para auditoria externa.\n"
-            "- Rollback batch: restaura conteúdo anterior daquele lote.\n\n"
+            "- Rollback batch: restaura conteúdo anterior daquele lote (old_content).\n\n"
             "========================================\n"
             "5) BOAS PRÁTICAS\n"
             "========================================\n"
@@ -755,6 +831,8 @@ class App(tk.Tk):
                         messagebox.showerror(title, text)
                     else:
                         messagebox.showinfo(title, text)
+                        if self._msg_limpeza_merece_som(title, text):
+                            self._som_conclusao_limpeza()
                 elif kind == "confirm":
                     title, text, result_box, evt = data
                     result_box["ok"] = messagebox.askyesno(title, text)

@@ -11,7 +11,23 @@ from pathlib import Path
 
 # Primeira ocorrência deste trecho marca o início do lixo repetitivo (DDE links).
 MARKER_DDE_BOOKMARK = r"{\*\bkmkstart __DdeLink__"
-DEFAULT_MARKERS = [MARKER_DDE_BOOKMARK]
+# Marcadores usados em precisa_limpeza / SELECT no banco e no fallback de corte tardio.
+DEFAULT_MARKERS = [
+    MARKER_DDE_BOOKMARK,
+    r"{\*\shppict",  # Início de formas/desenhos corrompidos
+    r"{\*\objdata",  # Objetos OLE (planilhas coladas etc.) que incham
+    r"{\*\pict",  # Imagens puras que podem repete-se em loop
+]
+# Remoção de grupos pict/obj/shppict pode apagar imagens — só automática acima deste tamanho.
+MIN_BYTES_HEAVY_RTF_CLEANUP = 5 * 1024 * 1024
+# Bloco contíguo só com hex (sem estrutura RTF no meio) típico de lixo/corrupção.
+HEX_ORPHAN_MIN_RUN = 500_000
+
+_HEAVY_GROUP_PREFIXES = (
+    r"{\*\shppict",
+    r"{\*\objdata",
+    r"{\*\pict",
+)
 _RE_DDE_BKMK = re.compile(r"\{\\\*\\bkmk(?:start|end)\s+__DdeLink__[^{}]*\}")
 SAFE_LEVEL = "seguro"
 INTERMEDIATE_LEVEL = "intermediario"
@@ -101,20 +117,61 @@ def _remove_groups_by_prefixes(text: str, prefixes: tuple[str, ...]) -> str:
     return out
 
 
+def _find_hex_orphan_run_start(text: str, min_run: int = HEX_ORPHAN_MIN_RUN) -> int | None:
+    """
+    Localiza o início do primeiro trecho contíguo com comprimento >= min_run
+    contendo apenas [0-9A-Fa-f] (sem chaves, contrabarra nem outros tokens RTF no meio).
+    """
+    if min_run <= 0 or len(text) < min_run:
+        return None
+    i = 0
+    n = len(text)
+    run_start = 0
+    run_len = 0
+    hex_set = frozenset("0123456789abcdefABCDEF")
+    while i < n:
+        if text[i] in hex_set:
+            if run_len == 0:
+                run_start = i
+            run_len += 1
+            if run_len >= min_run:
+                return run_start
+            i += 1
+        else:
+            run_len = 0
+            i += 1
+    return None
+
+
+def _truncar_balanceando_grupos(texto: str, corte: int) -> str:
+    truncado = texto[:corte].rstrip()
+    grupos_abertos = _calcular_grupos_abertos(truncado)
+    if grupos_abertos > 0:
+        truncado += "}" * grupos_abertos
+    return truncado
+
+
 def limpar_arquivo_rtf(
     conteudo_bruto: str,
     markers: list[str] | None = None,
     cleaning_level: str = SAFE_LEVEL,
 ) -> str:
     """
-    Remove blocos DDE/bookmark conhecidos sem truncar o conteúdo visível.
+    Remove blocos DDE/bookmark; em níveis superiores, metadados RTF auxiliares.
 
-    Se houver marcador customizado (via markers) e ele surgir muito no fim do
-    documento, aplica corte tardio como fallback.
+    Em modo agressivo, com conteúdo acima de ~5 MB, remove também grupos
+    \\*\\pict, \\*\\objdata e \\*\\shppict (pode tirar imagens/OLE embutidos).
+    Nesse nível, detecta “massas” hexadecimais órfãs (>=500k caracteres só 0-9A-F)
+    e trunca antes delas. O fallback de corte tardio usa o primeiro marcador de
+    `markers` (ou DEFAULT_MARKERS) que apareça nos últimos 10%% do ficheiro.
+
+    Rollback: em base de dados, `db_sanitize` grava o conteúdo anterior em
+    `rtf_sanitize_audit` (old_content), permitindo reverter lotes agressivos.
     """
     if not conteudo_bruto:
         return conteudo_bruto
 
+    alvo_marcadores = [m for m in (markers or DEFAULT_MARKERS) if m]
     conteudo_limpo = conteudo_bruto
 
     # Regra principal: remove apenas os grupos de bookmark DDE.
@@ -123,16 +180,20 @@ def limpar_arquivo_rtf(
     if cleaning_level in (INTERMEDIATE_LEVEL, AGGRESSIVE_LEVEL):
         conteudo_limpo = _remove_groups_by_prefixes(conteudo_limpo, _INTERMEDIATE_GROUP_PREFIXES)
 
-    # Fallback conservador: corte apenas se o marcador aparecer bem no fim.
-    idx, _ = _encontrar_primeiro_marcador(conteudo_limpo, markers)
+    if cleaning_level == AGGRESSIVE_LEVEL and len(conteudo_limpo) > MIN_BYTES_HEAVY_RTF_CLEANUP:
+        conteudo_limpo = _remove_groups_by_prefixes(conteudo_limpo, _HEAVY_GROUP_PREFIXES)
+
+    if cleaning_level == AGGRESSIVE_LEVEL:
+        hex_cut = _find_hex_orphan_run_start(conteudo_limpo, HEX_ORPHAN_MIN_RUN)
+        if hex_cut is not None and hex_cut > 0:
+            conteudo_limpo = _truncar_balanceando_grupos(conteudo_limpo, hex_cut)
+
+    # Fallback conservador: corte se algum marcador aparecer muito perto do fim.
+    idx, _ = _encontrar_primeiro_marcador(conteudo_limpo, alvo_marcadores)
     if idx != -1:
         ratio = idx / max(len(conteudo_limpo), 1)
         if ratio >= 0.90:
-            truncado = conteudo_limpo[:idx].rstrip()
-            grupos_abertos = _calcular_grupos_abertos(truncado)
-            if grupos_abertos > 0:
-                truncado += "}" * grupos_abertos
-            conteudo_limpo = truncado
+            conteudo_limpo = _truncar_balanceando_grupos(conteudo_limpo, idx)
 
     return conteudo_limpo
 
@@ -217,6 +278,8 @@ def parece_rtf(conteudo: str) -> bool:
 __all__ = [
     "MARKER_DDE_BOOKMARK",
     "DEFAULT_MARKERS",
+    "MIN_BYTES_HEAVY_RTF_CLEANUP",
+    "HEX_ORPHAN_MIN_RUN",
     "SAFE_LEVEL",
     "INTERMEDIATE_LEVEL",
     "AGGRESSIVE_LEVEL",

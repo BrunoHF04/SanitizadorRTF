@@ -3,7 +3,7 @@
 Manutenção em lote: documento_mesclado.conteudo (PostgreSQL).
 
 Critério de seleção padrão: LENGTH(conteudo) > --min-length OU conteúdo contém
-o marcador DDE (para não perder registros médios já corrompidos).
+algum marcador em DEFAULT_MARKERS (DDE, shppict, objdata, pict).
 
 Variáveis de ambiente (exemplo):
   PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD
@@ -26,7 +26,14 @@ from typing import Any
 
 import re as _re
 
-from rtf_sanitize import MARKER_DDE_BOOKMARK, limpar_arquivo_rtf, parece_rtf
+from rtf_sanitize import (
+    AGGRESSIVE_LEVEL,
+    DEFAULT_MARKERS,
+    INTERMEDIATE_LEVEL,
+    SAFE_LEVEL,
+    limpar_arquivo_rtf,
+    parece_rtf,
+)
 
 
 def _valid_sql_identifier(name: str) -> bool:
@@ -66,8 +73,9 @@ def iter_candidates(
     """
     cond_length = "LENGTH(conteudo::text) > %s"
     cond_marker = "position(%s in conteudo::text) > 0"
-    where = f"(({cond_length}) OR ({cond_marker}))"
-    params: list[Any] = [min_length, MARKER_DDE_BOOKMARK]
+    marker_ors = " OR ".join(f"({cond_marker})" for _ in DEFAULT_MARKERS)
+    where = f"(({cond_length}) OR ({marker_ors}))"
+    params: list[Any] = [min_length, *DEFAULT_MARKERS]
 
     sql = f"""
         SELECT {id_column}, conteudo::text, LENGTH(conteudo::text) AS len
@@ -103,6 +111,12 @@ def main() -> int:
         default="id",
         help="Nome da coluna PK (default: id)",
     )
+    p.add_argument(
+        "--cleaning-level",
+        default=SAFE_LEVEL,
+        choices=[SAFE_LEVEL, INTERMEDIATE_LEVEL, AGGRESSIVE_LEVEL],
+        help="Nível de limpeza (agressivo remove pict/obj só se conteúdo > ~5 MB)",
+    )
     args = p.parse_args()
     if not _valid_sql_identifier(args.id_column):
         print("--id-column deve ser um identificador SQL simples (ex.: id).", file=sys.stderr)
@@ -125,7 +139,7 @@ def main() -> int:
                 if not conteudo:
                     skipped += 1
                     continue
-                limpo = limpar_arquivo_rtf(conteudo)
+                limpo = limpar_arquivo_rtf(conteudo, cleaning_level=args.cleaning_level)
                 if limpo == conteudo:
                     skipped += 1
                     continue
