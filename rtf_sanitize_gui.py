@@ -54,14 +54,27 @@ class App(tk.Tk):
         frm = ttk.Frame(self, padding=12)
         frm.pack(fill=tk.BOTH, expand=True)
 
+        header = ttk.Frame(frm)
+        header.pack(fill=tk.X, **pad)
         ttk.Label(
-            frm,
+            header,
             text=(
                 "Remove o lixo após a primeira ocorrência de "
                 r"{\*\bkmkstart __DdeLink__ e garante que o RTF termina com }."
             ),
-            wraplength=600,
-        ).pack(anchor=tk.W, **pad)
+            wraplength=760,
+        ).pack(side=tk.LEFT, anchor=tk.W)
+        ttk.Button(
+            header,
+            text="?",
+            width=3,
+            command=self._mostrar_manual,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(
+            header,
+            text="Manual completo",
+            command=self._mostrar_manual_completo,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
 
         notebook = ttk.Notebook(frm)
         notebook.pack(fill=tk.BOTH, expand=True, **pad)
@@ -295,6 +308,125 @@ class App(tk.Tk):
         self._log.insert(tk.END, msg + "\n")
         self._log.see(tk.END)
         self._log.configure(state=tk.DISABLED)
+
+    def _mostrar_manual(self) -> None:
+        texto = (
+            "Manual rápido — Sanitizador RTF\n\n"
+            "1) Aba Arquivo\n"
+            "- Clique em Escolher para selecionar um .rtf/.txt.\n"
+            "- Clique em Limpar e guardar como.\n"
+            "- Se salvar por cima do original, a opção .bak cria backup.\n\n"
+            "2) Aba Pasta (lote)\n"
+            "- Selecione a pasta e as extensões.\n"
+            "- Escolha sobrescrever ou gerar em nova pasta.\n"
+            "- Em nova pasta, a estrutura de subpastas é mantida.\n\n"
+            "3) Aba Banco de dados\n"
+            "- Preencha conexão e teste.\n"
+            "- Carregue tabelas/colunas, ajuste filtros e rode primeiro em simulação.\n"
+            "- Marque UPDATE somente após revisar a prévia.\n"
+            "- Guarde o Batch ID para relatório e rollback.\n\n"
+            "Dica:\n"
+            "- Se um documento já foi salvo corrompido por outra ferramenta,\n"
+            "  restaure do .bak/original e execute novamente a higienização."
+        )
+        messagebox.showinfo("Ajuda / Manual", texto)
+
+    def _mostrar_manual_completo(self) -> None:
+        janela = tk.Toplevel(self)
+        janela.title("Manual completo — Sanitizador RTF")
+        janela.geometry("860x620")
+        janela.minsize(760, 520)
+        janela.transient(self)
+
+        container = ttk.Frame(janela, padding=12)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        txt = tk.Text(container, wrap=tk.WORD)
+        sb = ttk.Scrollbar(container, command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        conteudo = (
+            "SANITIZADOR RTF — MANUAL COMPLETO\n\n"
+            "Objetivo\n"
+            "A aplicação remove blocos de lixo que começam em:\n"
+            r"{\*\bkmkstart __DdeLink__" "\n"
+            "Após encontrar a primeira ocorrência, o sistema mantém apenas a parte válida\n"
+            "anterior e fecha os grupos RTF pendentes.\n\n"
+            "========================================\n"
+            "1) ABA ARQUIVO\n"
+            "========================================\n"
+            "Quando usar:\n"
+            "- Para higienizar um único documento.\n\n"
+            "Passo a passo:\n"
+            "1. Clique em 'Escolher...'.\n"
+            "2. Selecione o arquivo .rtf ou .txt.\n"
+            "3. Clique em 'Limpar e guardar como...'.\n"
+            "4. Escolha o destino do arquivo limpo.\n\n"
+            "Backup:\n"
+            "- Se salvar por cima do original e a opção estiver marcada, é criado .bak.\n\n"
+            "========================================\n"
+            "2) ABA PASTA (LOTE)\n"
+            "========================================\n"
+            "Quando usar:\n"
+            "- Para processar vários arquivos de uma vez.\n\n"
+            "Passo a passo:\n"
+            "1. Clique em 'Escolher pasta...'.\n"
+            "2. Marque extensões (.rtf / .txt).\n"
+            "3. Escolha modo:\n"
+            "   - Sobrescrever originais\n"
+            "   - Guardar em nova pasta\n"
+            "4. Clique em 'Processar pasta'.\n\n"
+            "Observação:\n"
+            "- No modo nova pasta, a estrutura de subpastas é preservada.\n\n"
+            "========================================\n"
+            "3) ABA BANCO DE DADOS\n"
+            "========================================\n"
+            "Quando usar:\n"
+            "- Para higienizar registros diretamente no PostgreSQL.\n\n"
+            "Passo a passo recomendado:\n"
+            "1. Preencha Host, Porta, Banco, Usuário e Senha.\n"
+            "2. Clique em 'Testar conexão'.\n"
+            "3. Clique em 'Carregar tabelas/colunas'.\n"
+            "4. Selecione tabela e coluna de conteúdo.\n"
+            "5. Ajuste filtros (Min chars, Min MB, limite).\n"
+            "6. Rode primeiro em simulação (UPDATE desmarcado).\n"
+            "7. Revise a prévia e só então marque UPDATE.\n"
+            "8. Guarde o Batch ID para relatório/rollback.\n\n"
+            "Campos importantes:\n"
+            "- Apenas registros que parecem RTF: restringe para conteúdos com cara de RTF.\n"
+            "- Varredura geral: ignora filtros de tamanho e analisa toda a tabela.\n\n"
+            "========================================\n"
+            "4) RELATÓRIO E ROLLBACK\n"
+            "========================================\n"
+            "- Ver relatório: mostra registros alterados por um Batch ID.\n"
+            "- Rollback batch: restaura conteúdo anterior daquele lote.\n\n"
+            "========================================\n"
+            "5) BOAS PRÁTICAS\n"
+            "========================================\n"
+            "- Sempre começar em simulação.\n"
+            "- Fazer backup antes de operações grandes.\n"
+            "- Executar lotes grandes fora do horário de pico.\n"
+            "- Guardar os Batch IDs das execuções.\n\n"
+            "========================================\n"
+            "6) RESOLUÇÃO DE PROBLEMAS\n"
+            "========================================\n"
+            "Arquivo ainda não abre após higienização:\n"
+            "- Tente novamente a partir do original ou .bak.\n"
+            "- Confirme se o documento de origem realmente contém RTF válido.\n\n"
+            "Banco sem alterações:\n"
+            "- Reduza filtros de tamanho.\n"
+            "- Desmarque temporariamente 'Apenas registros que parecem RTF'.\n"
+            "- Verifique se a coluna escolhida é a coluna correta de conteúdo.\n"
+        )
+
+        txt.insert("1.0", conteudo)
+        txt.configure(state=tk.DISABLED)
+
+        footer = ttk.Frame(janela, padding=(12, 0, 12, 12))
+        footer.pack(fill=tk.X)
+        ttk.Button(footer, text="Fechar", command=janela.destroy).pack(side=tk.RIGHT)
 
     def _poll_queue(self) -> None:
         try:
