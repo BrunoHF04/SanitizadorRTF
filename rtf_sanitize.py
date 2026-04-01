@@ -9,10 +9,34 @@ from __future__ import annotations
 MARKER_DDE_BOOKMARK = r"{\*\bkmkstart __DdeLink__"
 
 
+def _calcular_grupos_abertos(rtf: str) -> int:
+    """
+    Conta o saldo de grupos RTF abertos por chaves não escapadas.
+
+    Em RTF, somente "{" e "}" não precedidos por "\" delimitam grupos.
+    """
+    saldo = 0
+    i = 0
+    n = len(rtf)
+    while i < n:
+        ch = rtf[i]
+        if ch == "\\":
+            # Ignora o caractere seguinte (inclui \{, \}, \\ e escapes hex).
+            i += 2
+            continue
+        if ch == "{":
+            saldo += 1
+        elif ch == "}":
+            if saldo > 0:
+                saldo -= 1
+        i += 1
+    return saldo
+
+
 def limpar_arquivo_rtf(conteudo_bruto: str) -> str:
     """
     Remove tudo após a primeira ocorrência de MARKER_DDE_BOOKMARK e garante
-    que o RTF termine com '}'.
+    que os grupos RTF pendentes sejam fechados.
     """
     if not conteudo_bruto:
         return conteudo_bruto
@@ -22,9 +46,9 @@ def limpar_arquivo_rtf(conteudo_bruto: str) -> str:
         return conteudo_bruto
 
     conteudo_limpo = conteudo_bruto[:idx].rstrip()
-
-    if not conteudo_limpo.endswith("}"):
-        conteudo_limpo += "}"
+    grupos_abertos = _calcular_grupos_abertos(conteudo_limpo)
+    if grupos_abertos > 0:
+        conteudo_limpo += "}" * grupos_abertos
 
     return conteudo_limpo
 
