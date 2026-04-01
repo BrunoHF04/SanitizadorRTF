@@ -24,7 +24,7 @@ A estratégia adotada é cirúrgica:
 
 1. localizar a **primeira ocorrência** do marcador;
 2. manter somente o conteúdo anterior;
-3. garantir que o resultado termine com `}`.
+3. fechar os grupos RTF pendentes de forma estrutural.
 
 ---
 
@@ -66,7 +66,8 @@ A estratégia adotada é cirúrgica:
 - abre `.rtf`/`.txt`;
 - limpa o conteúdo;
 - salva em novo arquivo;
-- opção de backup `.bak` ao sobrescrever.
+- opção de backup `.bak` ao sobrescrever;
+- mostra prévia do trecho removido no log (início/fim).
 
 ### 2) Higienização de pasta (lote)
 
@@ -86,6 +87,9 @@ A estratégia adotada é cirúrgica:
   - `Min MB`
   - `Varredura geral (toda a tabela)` (ignora filtros e analisa todos os registros);
 - opção **Apenas registros que parecem RTF**;
+- opção **Validar RTF após limpeza (estrito)** para evitar gravação inválida;
+- opção **Commit por lote** (transações parciais);
+- botão **Parar processamento** (interrupção segura);
 - execução com **simulação (dry-run)** ou **UPDATE real**;
 - confirmação obrigatória com prévia antes do UPDATE.
 
@@ -96,8 +100,25 @@ Cada UPDATE gera um `batch_id` único e grava auditoria em `rtf_sanitize_audit`.
 Com isso é possível:
 
 - consultar relatório de um lote;
+- exportar relatório em **CSV**;
 - registrar campos extras no relatório (`Campos relatório`);
 - fazer rollback completo do lote pelo `batch_id`.
+
+### 5) Regras avançadas de marcadores
+
+- campo **Marcadores extras (; )** na GUI para novos padrões;
+- carregamento por JSON (`{"markers": ["..."]}` ou `["..."]`);
+- marcador padrão DDE permanece sempre ativo.
+
+### 6) Interface (UX)
+
+- tema **dark** com contraste suave para uso prolongado;
+- aba de banco reorganizada em blocos:
+  - `1) Conexão`
+  - `2) Escopo e filtros`
+  - `3) Execução`
+  - `4) Batch e auditoria`
+- botão `?` (manual rápido) e **Manual completo** com rolagem.
 
 ---
 
@@ -154,7 +175,7 @@ powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 
 Executável gerado em:
 
-`dist/SanitizadorRTF_novo.exe`
+`dist/SanitizadorRTF.exe`
 
 ---
 

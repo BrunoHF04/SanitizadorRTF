@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import json
 import re as _re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 from uuid import uuid4
 
-from rtf_sanitize import MARKER_DDE_BOOKMARK, limpar_arquivo_rtf, parece_rtf
+from rtf_sanitize import (
+    DEFAULT_MARKERS,
+    analisar_limpeza,
+    limpar_arquivo_rtf,
+    parece_rtf,
+    validar_estrutura_rtf,
+)
 
 
 def _valid_sql_identifier(name: str) -> bool:
@@ -32,6 +40,11 @@ def sanitize_documento_mesclado(
     content_column: str = "conteudo",
     id_column: str | None = None,
     report_columns: list[str] | None = None,
+    markers: list[str] | None = None,
+    batch_size: int = 200,
+    progress: Callable[[int, int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    strict_rtf_validation: bool = True,
     log: Callable[[str], None] | None = None,
 ) -> tuple[int, int, str | None]:
     """
@@ -47,6 +60,9 @@ def sanitize_documento_mesclado(
     if id_column is not None and not _valid_sql_identifier(id_column):
         raise ValueError("id_column inválido. Use apenas identificador simples (ex.: id).")
     report_columns = report_columns or []
+    markers = [m for m in (markers or DEFAULT_MARKERS) if m]
+    if batch_size <= 0:
+        batch_size = 200
     if min_megabytes is not None and min_megabytes < 0:
         raise ValueError("min_megabytes deve ser >= 0.")
     for col in report_columns:
@@ -69,6 +85,10 @@ def sanitize_documento_mesclado(
     def _log(msg: str) -> None:
         if log:
             log(msg)
+
+    def _progress(scanned: int, updated: int, skipped: int) -> None:
+        if progress:
+            progress(scanned, updated, skipped)
 
     conn = psycopg2.connect(database_url.strip())
     try:
@@ -107,8 +127,13 @@ def sanitize_documento_mesclado(
         if full_scan:
             where_sql = "1=1"
         else:
-            where_parts = ["position(%s in src.{content_column}::text) > 0".format(content_column=content_column)]
-            params.append(MARKER_DDE_BOOKMARK)
+            marker_clauses = []
+            for marker in markers:
+                marker_clauses.append(
+                    "position(%s in src.{content_column}::text) > 0".format(content_column=content_column)
+                )
+                params.append(marker)
+            where_parts = ["(" + " OR ".join(marker_clauses) + ")"] if marker_clauses else []
             if min_length > 0:
                 where_parts.append("LENGTH(src.{content_column}::text) > %s".format(content_column=content_column))
                 params.append(min_length)
@@ -129,25 +154,40 @@ def sanitize_documento_mesclado(
             sql += " LIMIT %s"
             params.append(limit)
 
-        read_cur = conn.cursor(name="sanitize_rtf_stream")
+        read_cur = conn.cursor(name="sanitize_rtf_stream", withhold=True)
         read_cur.itersize = 1
         upd_cur = conn.cursor()
         updated = 0
         skipped = 0
+        scanned = 0
+        updates_since_commit = 0
         try:
             read_cur.execute(sql, params)
             for row in read_cur:
+                if should_stop and should_stop():
+                    _log("Processamento interrompido por solicitação do usuário.")
+                    break
+                scanned += 1
                 row_id, conteudo, length = row[0], row[1], row[2]
                 report_values = row[3:]
                 if only_rtf and not parece_rtf(conteudo or ""):
                     skipped += 1
+                    _progress(scanned, updated, skipped)
                     continue
                 if not conteudo:
                     skipped += 1
+                    _progress(scanned, updated, skipped)
                     continue
-                limpo = limpar_arquivo_rtf(conteudo)
+                analise = analisar_limpeza(conteudo, markers=markers)
+                limpo = limpar_arquivo_rtf(conteudo, markers=markers)
                 if limpo == conteudo:
                     skipped += 1
+                    _progress(scanned, updated, skipped)
+                    continue
+                if strict_rtf_validation and analise["was_rtf_before"] and not validar_estrutura_rtf(limpo):
+                    skipped += 1
+                    _log(f"ref={row_id} pulado: saída RTF inválida após limpeza.")
+                    _progress(scanned, updated, skipped)
                     continue
 
                 _log(
@@ -182,8 +222,16 @@ def sanitize_documento_mesclado(
                         (limpo, row_id),
                     )
                     updated += upd_cur.rowcount
+                    updates_since_commit += upd_cur.rowcount
+                    if updates_since_commit >= batch_size:
+                        conn.commit()
+                        _log(
+                            f"Commit parcial realizado ({updates_since_commit} atualizações no lote atual)."
+                        )
+                        updates_since_commit = 0
                 else:
                     updated += 1
+                _progress(scanned, updated, skipped)
         finally:
             read_cur.close()
             upd_cur.close()
@@ -388,6 +436,46 @@ def get_batch_report(database_url: str, batch_id: str, limit: int = 500) -> list
             return out
     finally:
         conn.close()
+
+
+def export_batch_report_csv(database_url: str, batch_id: str, output_dir: str | None = None) -> str:
+    rows = get_batch_report(database_url, batch_id, limit=1_000_000)
+    if not rows:
+        raise ValueError("Nenhum registro encontrado para esse batch.")
+    out_dir = Path(output_dir or ".").resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    out_path = out_dir / f"rtf_sanitize_batch_{batch_id}_{ts}.csv"
+    import csv
+
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(
+            [
+                "table_name",
+                "key_column",
+                "key_value",
+                "content_column",
+                "old_len",
+                "new_len",
+                "changed_at",
+                "report_data_json",
+            ]
+        )
+        for r in rows:
+            writer.writerow(
+                [
+                    r["table_name"],
+                    r["key_column"],
+                    r["key_value"],
+                    r["content_column"],
+                    r["old_len"],
+                    r["new_len"],
+                    r["changed_at"],
+                    json.dumps(r.get("report_data") or {}, ensure_ascii=False),
+                ]
+            )
+    return str(out_path)
 
 
 def rollback_batch(database_url: str, batch_id: str) -> int:

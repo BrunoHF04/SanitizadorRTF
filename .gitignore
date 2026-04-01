@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+.gui-venv/
+.venv/
+
+build/
+dist/
+
+*.spec

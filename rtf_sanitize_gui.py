@@ -14,6 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 from urllib.parse import quote_plus
 
 from db_sanitize import (
+    export_batch_report_csv,
     get_batch_report,
     list_postgres_columns,
     list_postgres_tables,
@@ -21,7 +22,14 @@ from db_sanitize import (
     sanitize_documento_mesclado,
     test_postgres_connection,
 )
-from rtf_sanitize import MARKER_DDE_BOOKMARK, limpar_arquivo_rtf, parece_rtf
+from rtf_sanitize import (
+    DEFAULT_MARKERS,
+    MARKER_DDE_BOOKMARK,
+    analisar_limpeza,
+    carregar_marcadores_de_json,
+    limpar_arquivo_rtf,
+    parece_rtf,
+)
 
 
 def _ler_texto_preservando_bytes(caminho: Path) -> tuple[str, str]:
@@ -40,14 +48,124 @@ def _guardar_texto_preservando_bytes(caminho: Path, texto: str) -> None:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        self._apply_dark_theme()
         self.title("Sanitizador RTF — DDE / bookmark")
         self.minsize(860, 560)
         self.geometry("980x650")
 
         self._queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._last_batch_id = ""
+        self._stop_requested = threading.Event()
         self._build()
         self.after(200, self._poll_queue)
+
+    def _apply_dark_theme(self) -> None:
+        bg = "#1f2128"
+        panel = "#262a33"
+        panel2 = "#2d3340"
+        fg = "#e6eaf2"
+        muted = "#a8b0c0"
+        accent = "#5b8cff"
+        field = "#2a2f3a"
+        border = "#3a4150"
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        self.configure(bg=bg)
+        self.option_add("*Foreground", fg)
+        self.option_add("*Background", bg)
+        self.option_add("*selectBackground", accent)
+        self.option_add("*selectForeground", "#ffffff")
+        self.option_add("*Entry.Background", field)
+        self.option_add("*Entry.Foreground", fg)
+        self.option_add("*Text.Background", field)
+        self.option_add("*Text.Foreground", fg)
+        self.option_add("*insertBackground", "#ffffff")
+
+        style.configure(".", background=bg, foreground=fg)
+        style.configure("TFrame", background=bg)
+        style.configure(
+            "TLabelframe",
+            background=bg,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            borderwidth=1,
+            relief="solid",
+        )
+        style.configure("TLabelframe.Label", background=bg, foreground=fg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.configure("TRadiobutton", background=bg, foreground=fg)
+        style.map(
+            "TCheckbutton",
+            background=[("active", bg)],
+            foreground=[("disabled", muted), ("active", fg)],
+        )
+        style.map(
+            "TRadiobutton",
+            background=[("active", bg)],
+            foreground=[("disabled", muted), ("active", fg)],
+        )
+
+        style.configure(
+            "TButton",
+            background=panel2,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=panel2,
+            darkcolor=panel2,
+            padding=(10, 5),
+        )
+        style.map(
+            "TButton",
+            background=[("active", "#384053"), ("pressed", "#333a4a")],
+            foreground=[("disabled", muted), ("active", "#ffffff")],
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground=field,
+            foreground=fg,
+            insertcolor="#ffffff",
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+        )
+        style.map("TEntry", fieldbackground=[("readonly", "#242934")], foreground=[("readonly", "#d5d8df")])
+
+        style.configure(
+            "TCombobox",
+            fieldbackground=field,
+            background=panel2,
+            foreground=fg,
+            bordercolor=border,
+            lightcolor=border,
+            darkcolor=border,
+            arrowsize=14,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#242934")],
+            foreground=[("readonly", "#d5d8df")],
+            background=[("active", "#384053")],
+        )
+
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure("TNotebook.Tab", background=panel, foreground=fg, padding=(10, 6))
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", panel2), ("active", "#363d4d")],
+            foreground=[("selected", "#ffffff"), ("active", "#ffffff")],
+        )
+
+        style.configure("Horizontal.TScrollbar", background=panel2, troughcolor=panel)
+        style.configure("Vertical.TScrollbar", background=panel2, troughcolor=panel)
 
     def _build(self) -> None:
         pad = {"padx": 10, "pady": 8}
@@ -60,7 +178,7 @@ class App(tk.Tk):
             header,
             text=(
                 "Remove o lixo após a primeira ocorrência de "
-                r"{\*\bkmkstart __DdeLink__ e garante que o RTF termina com }."
+                r"{\*\bkmkstart __DdeLink__ e fecha grupos RTF pendentes."
             ),
             wraplength=760,
         ).pack(side=tk.LEFT, anchor=tk.W)
@@ -75,6 +193,17 @@ class App(tk.Tk):
             text="Manual completo",
             command=self._mostrar_manual_completo,
         ).pack(side=tk.RIGHT, padx=(8, 0))
+
+        regras = ttk.LabelFrame(frm, text="Regras avançadas de limpeza", padding=8)
+        regras.pack(fill=tk.X, **pad)
+        rr = ttk.Frame(regras)
+        rr.pack(fill=tk.X)
+        ttk.Label(rr, text="Marcadores extras (;):").pack(side=tk.LEFT)
+        self._markers_text = tk.StringVar(value="")
+        ttk.Entry(rr, textvariable=self._markers_text).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8)
+        )
+        ttk.Button(rr, text="Carregar JSON...", command=self._carregar_markers_json).pack(side=tk.LEFT)
 
         notebook = ttk.Notebook(frm)
         notebook.pack(fill=tk.BOTH, expand=True, **pad)
@@ -170,114 +299,112 @@ class App(tk.Tk):
         self._atualizar_estado_destino_lote()
 
         # —— Aba Banco de dados (PostgreSQL) ——
-        f3 = ttk.LabelFrame(aba_banco, text="Conexão PostgreSQL", padding=8)
+        f3 = ttk.Frame(aba_banco, padding=2)
         f3.pack(fill=tk.X, **pad)
-        db1 = ttk.Frame(f3)
+
+        conn_box = ttk.LabelFrame(f3, text="1) Conexão", padding=8)
+        conn_box.pack(fill=tk.X)
+        db1 = ttk.Frame(conn_box)
         db1.pack(fill=tk.X)
-        ttk.Label(db1, text="Host:").pack(side=tk.LEFT)
+        ttk.Label(db1, text="Host").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._db_host = tk.StringVar(value="127.0.0.1")
-        ttk.Entry(db1, textvariable=self._db_host, width=20).pack(side=tk.LEFT, padx=(8, 12))
-        ttk.Label(db1, text="Porta:").pack(side=tk.LEFT)
+        ttk.Entry(db1, textvariable=self._db_host, width=22).grid(row=0, column=1, sticky="w", padx=(0, 14))
+        ttk.Label(db1, text="Porta").grid(row=0, column=2, sticky="w", padx=(0, 6))
         self._db_port = tk.StringVar(value="5432")
-        ttk.Entry(db1, textvariable=self._db_port, width=8).pack(side=tk.LEFT, padx=(8, 12))
-        ttk.Label(db1, text="Banco:").pack(side=tk.LEFT)
+        ttk.Entry(db1, textvariable=self._db_port, width=8).grid(row=0, column=3, sticky="w", padx=(0, 14))
+        ttk.Label(db1, text="Banco").grid(row=0, column=4, sticky="w", padx=(0, 6))
         self._db_name = tk.StringVar()
-        ttk.Entry(db1, textvariable=self._db_name, width=20).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        ttk.Entry(db1, textvariable=self._db_name).grid(row=0, column=5, sticky="ew")
+        db1.columnconfigure(5, weight=1)
 
-        db1b = ttk.Frame(f3)
+        db1b = ttk.Frame(conn_box)
         db1b.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(db1b, text="Usuário:").pack(side=tk.LEFT)
+        ttk.Label(db1b, text="Usuário").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._db_user = tk.StringVar()
-        ttk.Entry(db1b, textvariable=self._db_user, width=20).pack(side=tk.LEFT, padx=(8, 12))
-        ttk.Label(db1b, text="Senha:").pack(side=tk.LEFT)
+        ttk.Entry(db1b, textvariable=self._db_user, width=22).grid(row=0, column=1, sticky="w", padx=(0, 14))
+        ttk.Label(db1b, text="Senha").grid(row=0, column=2, sticky="w", padx=(0, 6))
         self._db_pass = tk.StringVar()
-        ttk.Entry(db1b, textvariable=self._db_pass, show="*", width=20).pack(
-            side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True
-        )
+        ttk.Entry(db1b, textvariable=self._db_pass, show="*").grid(row=0, column=3, sticky="ew")
+        db1b.columnconfigure(3, weight=1)
 
-        db2 = ttk.Frame(f3)
-        db2.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(db2, text="Min chars:").pack(side=tk.LEFT)
+        scope_box = ttk.LabelFrame(f3, text="2) Escopo e filtros", padding=8)
+        scope_box.pack(fill=tk.X, pady=(8, 0))
+        db2 = ttk.Frame(scope_box)
+        db2.pack(fill=tk.X)
+        ttk.Label(db2, text="Tabela").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self._db_table = tk.StringVar(value="documento_mesclado")
+        self._db_table_combo = ttk.Combobox(db2, textvariable=self._db_table, width=40, state="normal")
+        self._db_table_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        self._db_table_combo.bind("<<ComboboxSelected>>", self._on_tabela_change)
+        ttk.Label(db2, text="Coluna conteúdo").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        self._db_content_col = tk.StringVar(value="conteudo")
+        self._db_content_combo = ttk.Combobox(db2, textvariable=self._db_content_col, width=22, state="normal")
+        self._db_content_combo.grid(row=0, column=3, sticky="w")
+        db2.columnconfigure(1, weight=1)
+
+        db2b = ttk.Frame(scope_box)
+        db2b.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(db2b, text="Min chars").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._db_min_length = tk.StringVar(value="1000000")
-        ttk.Entry(db2, textvariable=self._db_min_length, width=12).pack(side=tk.LEFT, padx=(8, 16))
-        ttk.Label(db2, text="Min MB:").pack(side=tk.LEFT)
+        ttk.Entry(db2b, textvariable=self._db_min_length, width=12).grid(row=0, column=1, sticky="w", padx=(0, 12))
+        ttk.Label(db2b, text="Min MB").grid(row=0, column=2, sticky="w", padx=(0, 6))
         self._db_min_mb = tk.StringVar(value="")
-        ttk.Entry(db2, textvariable=self._db_min_mb, width=10).pack(side=tk.LEFT, padx=(8, 16))
-        ttk.Label(db2, text="Limite:").pack(side=tk.LEFT)
+        ttk.Entry(db2b, textvariable=self._db_min_mb, width=10).grid(row=0, column=3, sticky="w", padx=(0, 12))
+        ttk.Label(db2b, text="Limite").grid(row=0, column=4, sticky="w", padx=(0, 6))
         self._db_limit = tk.StringVar(value="")
-        ttk.Entry(db2, textvariable=self._db_limit, width=10).pack(side=tk.LEFT, padx=(8, 16))
-        ttk.Label(db2, text="Campos relatório:").pack(side=tk.LEFT)
+        ttk.Entry(db2b, textvariable=self._db_limit, width=10).grid(row=0, column=5, sticky="w", padx=(0, 12))
+        ttk.Label(db2b, text="Commit por lote").grid(row=0, column=6, sticky="w", padx=(0, 6))
+        self._db_batch_size = tk.StringVar(value="200")
+        ttk.Entry(db2b, textvariable=self._db_batch_size, width=8).grid(row=0, column=7, sticky="w")
+
+        db2c = ttk.Frame(scope_box)
+        db2c.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(db2c, text="Campos relatório").pack(side=tk.LEFT)
         self._db_report_cols = tk.StringVar(value="")
-        ttk.Entry(db2, textvariable=self._db_report_cols, width=36).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        ttk.Entry(db2c, textvariable=self._db_report_cols).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
         ttk.Label(
-            f3,
+            scope_box,
             text="Dica: use colunas locais (ex.: id_documentomesclado) ou relacionadas em formato tabela.coluna (ex.: protocolo_documentomesclado.id_protocolo).",
-            foreground="#555",
+            foreground="#aeb4c0",
             wraplength=900,
         ).pack(anchor=tk.W, pady=(6, 0))
 
-        db2b = ttk.Frame(f3)
-        db2b.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(db2b, text="Tabela:").pack(side=tk.LEFT)
-        self._db_table = tk.StringVar(value="documento_mesclado")
-        self._db_table_combo = ttk.Combobox(
-            db2b, textvariable=self._db_table, width=42, state="normal"
-        )
-        self._db_table_combo.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
-        self._db_table_combo.bind("<<ComboboxSelected>>", self._on_tabela_change)
-
-        db2c = ttk.Frame(f3)
-        db2c.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(db2c, text="Coluna conteúdo:").pack(side=tk.LEFT)
-        self._db_content_col = tk.StringVar(value="conteudo")
-        self._db_content_combo = ttk.Combobox(
-            db2c, textvariable=self._db_content_col, width=24, state="normal"
-        )
-        self._db_content_combo.pack(side=tk.LEFT, padx=(8, 16))
-
-        db3 = ttk.Frame(f3)
-        db3.pack(fill=tk.X, pady=(8, 0))
+        run_box = ttk.LabelFrame(f3, text="3) Execução", padding=8)
+        run_box.pack(fill=tk.X, pady=(8, 0))
+        run_checks = ttk.Frame(run_box)
+        run_checks.pack(fill=tk.X)
         self._db_only_rtf = tk.BooleanVar(value=True)
-        ttk.Checkbutton(db3, text="Apenas registos que parecem RTF", variable=self._db_only_rtf).pack(
-            side=tk.LEFT
-        )
+        ttk.Checkbutton(run_checks, text="Apenas registros que parecem RTF", variable=self._db_only_rtf).pack(side=tk.LEFT)
         self._db_full_scan = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            db3,
-            text="Varredura geral (toda a tabela)",
-            variable=self._db_full_scan,
-        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Checkbutton(run_checks, text="Varredura geral", variable=self._db_full_scan).pack(side=tk.LEFT, padx=(14, 0))
         self._db_execute = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            db3,
-            text="Aplicar UPDATE (desmarcado = simulação)",
-            variable=self._db_execute,
-        ).pack(side=tk.LEFT, padx=(12, 0))
-        db4 = ttk.Frame(f3)
-        db4.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(
-            db4,
-            text="Higienizar banco",
-            command=self._processar_banco,
-        ).pack(side=tk.RIGHT)
-        ttk.Button(
-            db4,
-            text="Testar conexão",
-            command=self._testar_conexao_banco,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
-        ttk.Button(
-            db4,
-            text="Carregar tabelas/colunas",
-            command=self._carregar_metadata_banco,
-        ).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Checkbutton(run_checks, text="Aplicar UPDATE", variable=self._db_execute).pack(side=tk.LEFT, padx=(14, 0))
+        self._db_strict_validation = tk.BooleanVar(value=True)
+        ttk.Checkbutton(run_checks, text="Validação RTF estrita", variable=self._db_strict_validation).pack(side=tk.LEFT, padx=(14, 0))
 
-        db5 = ttk.Frame(f3)
-        db5.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(db5, text="Batch ID:").pack(side=tk.LEFT)
+        run_progress = ttk.Frame(run_box)
+        run_progress.pack(fill=tk.X, pady=(8, 0))
+        self._db_progress_text = tk.StringVar(value="Progresso: parado")
+        ttk.Label(run_progress, textvariable=self._db_progress_text, foreground="#aeb4c0").pack(side=tk.LEFT)
+
+        run_actions = ttk.Frame(run_box)
+        run_actions.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(run_actions, text="Carregar tabelas/colunas", command=self._carregar_metadata_banco).pack(side=tk.LEFT)
+        ttk.Button(run_actions, text="Testar conexão", command=self._testar_conexao_banco).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(run_actions, text="Parar", command=self._parar_processamento_banco).pack(side=tk.RIGHT)
+        ttk.Button(run_actions, text="Higienizar banco", command=self._processar_banco).pack(side=tk.RIGHT, padx=(0, 8))
+
+        audit_box = ttk.LabelFrame(f3, text="4) Batch e auditoria", padding=8)
+        audit_box.pack(fill=tk.X, pady=(8, 0))
+        db5 = ttk.Frame(audit_box)
+        db5.pack(fill=tk.X)
+        ttk.Label(db5, text="Batch ID").pack(side=tk.LEFT)
         self._db_batch_id = tk.StringVar()
-        ttk.Entry(db5, textvariable=self._db_batch_id).pack(side=tk.LEFT, padx=(8, 16), fill=tk.X, expand=True)
-        ttk.Button(db5, text="Ver relatório", command=self._ver_relatorio_batch).pack(side=tk.RIGHT)
-        ttk.Button(db5, text="Rollback batch", command=self._rollback_batch).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Entry(db5, textvariable=self._db_batch_id).pack(side=tk.LEFT, padx=(8, 8), fill=tk.X, expand=True)
+        ttk.Button(db5, text="Rollback", command=self._rollback_batch).pack(side=tk.RIGHT)
+        ttk.Button(db5, text="Ver relatório", command=self._ver_relatorio_batch).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(db5, text="Exportar CSV", command=self._exportar_relatorio_csv).pack(side=tk.RIGHT, padx=(0, 8))
 
         f3b = ttk.LabelFrame(aba_banco, text="URL gerada (opcional)", padding=8)
         f3b.pack(fill=tk.X, **pad)
@@ -291,6 +418,15 @@ class App(tk.Tk):
         log_frame = ttk.Frame(frm)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 6))
         self._log = tk.Text(log_frame, height=12, wrap=tk.WORD, state=tk.DISABLED)
+        self._log.configure(
+            bg="#262c37",
+            fg="#e8e8e8",
+            insertbackground="#ffffff",
+            selectbackground="#5b8cff",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            borderwidth=0,
+        )
         sb = ttk.Scrollbar(log_frame, command=self._log.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -300,7 +436,7 @@ class App(tk.Tk):
             frm,
             text="Marcador: " + MARKER_DDE_BOOKMARK[:40] + "…",
             font=("TkDefaultFont", 8),
-            foreground="#555",
+            foreground="#aeb4c0",
         ).pack(anchor=tk.W, padx=10)
 
     def _log_line(self, msg: str) -> None:
@@ -316,6 +452,9 @@ class App(tk.Tk):
             "- Clique em Escolher para selecionar um .rtf/.txt.\n"
             "- Clique em Limpar e guardar como.\n"
             "- Se salvar por cima do original, a opção .bak cria backup.\n\n"
+            "Regras avançadas\n"
+            "- Use 'Marcadores extras (;)' para adicionar novos padrões.\n"
+            "- Também é possível carregar marcadores por JSON.\n\n"
             "2) Aba Pasta (lote)\n"
             "- Selecione a pasta e as extensões.\n"
             "- Escolha sobrescrever ou gerar em nova pasta.\n"
@@ -325,6 +464,10 @@ class App(tk.Tk):
             "- Carregue tabelas/colunas, ajuste filtros e rode primeiro em simulação.\n"
             "- Marque UPDATE somente após revisar a prévia.\n"
             "- Guarde o Batch ID para relatório e rollback.\n\n"
+            "Banco (novidades)\n"
+            "- Commit por lote: reduz risco de transações grandes.\n"
+            "- Parar processamento: solicita interrupção segura.\n"
+            "- Exportar CSV: gera relatório completo do batch.\n\n"
             "Dica:\n"
             "- Se um documento já foi salvo corrompido por outra ferramenta,\n"
             "  restaure do .bak/original e execute novamente a higienização."
@@ -342,6 +485,15 @@ class App(tk.Tk):
         container.pack(fill=tk.BOTH, expand=True)
 
         txt = tk.Text(container, wrap=tk.WORD)
+        txt.configure(
+            bg="#262c37",
+            fg="#e8e8e8",
+            insertbackground="#ffffff",
+            selectbackground="#5b8cff",
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            borderwidth=0,
+        )
         sb = ttk.Scrollbar(container, command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -354,6 +506,10 @@ class App(tk.Tk):
             r"{\*\bkmkstart __DdeLink__" "\n"
             "Após encontrar a primeira ocorrência, o sistema mantém apenas a parte válida\n"
             "anterior e fecha os grupos RTF pendentes.\n\n"
+            "Regras avançadas\n"
+            "- Pode adicionar marcadores extras no topo da tela (separados por ';').\n"
+            "- Pode carregar JSON com formato {\"markers\": [\"...\"]} ou [\"...\"].\n"
+            "- O marcador padrão de DDE continua sempre ativo.\n\n"
             "========================================\n"
             "1) ABA ARQUIVO\n"
             "========================================\n"
@@ -396,11 +552,15 @@ class App(tk.Tk):
             "8. Guarde o Batch ID para relatório/rollback.\n\n"
             "Campos importantes:\n"
             "- Apenas registros que parecem RTF: restringe para conteúdos com cara de RTF.\n"
-            "- Varredura geral: ignora filtros de tamanho e analisa toda a tabela.\n\n"
+            "- Varredura geral: ignora filtros de tamanho e analisa toda a tabela.\n"
+            "- Validar RTF após limpeza (estrito): evita gravar saída inválida.\n"
+            "- Commit por lote: define frequência de commit durante UPDATE.\n"
+            "- Parar processamento: envia solicitação de interrupção segura.\n\n"
             "========================================\n"
             "4) RELATÓRIO E ROLLBACK\n"
             "========================================\n"
             "- Ver relatório: mostra registros alterados por um Batch ID.\n"
+            "- Exportar CSV: gera arquivo para auditoria externa.\n"
             "- Rollback batch: restaura conteúdo anterior daquele lote.\n\n"
             "========================================\n"
             "5) BOAS PRÁTICAS\n"
@@ -471,6 +631,33 @@ class App(tk.Tk):
         if p:
             self._path_destino_lote.set(p)
 
+    def _markers_ativos(self) -> list[str]:
+        extras = [x.strip() for x in self._markers_text.get().split(";") if x.strip()]
+        out: list[str] = []
+        for m in [*DEFAULT_MARKERS, *extras]:
+            if m not in out:
+                out.append(m)
+        return out
+
+    def _carregar_markers_json(self) -> None:
+        p = filedialog.askopenfilename(
+            title="Selecionar JSON de marcadores",
+            filetypes=[("JSON", "*.json"), ("Todos", "*.*")],
+        )
+        if not p:
+            return
+        try:
+            markers = carregar_marcadores_de_json(p)
+            extras = [m for m in markers if m not in DEFAULT_MARKERS]
+            self._markers_text.set(";".join(extras))
+            messagebox.showinfo(
+                "Marcadores",
+                f"Marcadores carregados: {len(markers)}\n"
+                f"Marcador padrão sempre ativo: {DEFAULT_MARKERS[0]}",
+            )
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Erro ao carregar marcadores", str(e))
+
     def _atualizar_estado_destino_lote(self) -> None:
         enabled = self._batch_mode.get() == "new_folder"
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -506,18 +693,33 @@ class App(tk.Tk):
 
                 texto, modo = _ler_texto_preservando_bytes(po)
                 n_antes = len(texto)
-                tem_marcador = MARKER_DDE_BOOKMARK in texto
-                limpo = limpar_arquivo_rtf(texto)
+                analise = analisar_limpeza(texto, markers=self._markers_ativos())
+                limpo = limpar_arquivo_rtf(texto, markers=self._markers_ativos())
                 n_depois = len(limpo)
                 _guardar_texto_preservando_bytes(pd, limpo)
 
+                rem_ini = (analise["removed_preview_start"] or "").replace("\n", " ")[:120]
+                rem_fim = (analise["removed_preview_end"] or "").replace("\n", " ")[:120]
                 self._queue.put(
                     (
                         "log",
                         f"{po.name}: {n_antes:,} → {n_depois:,} chars | "
-                        f"RTF provável: {parece_rtf(texto)} | marcador: {tem_marcador} | leitura: {modo}",
+                        f"RTF provável: {parece_rtf(texto)} | marcador: {analise['marker_found']} | leitura: {modo}",
                     )
                 )
+                if analise["marker_found"]:
+                    self._queue.put(
+                        (
+                            "log",
+                            f"Prévia removida (início): {rem_ini if rem_ini else '(vazio)'}",
+                        )
+                    )
+                    self._queue.put(
+                        (
+                            "log",
+                            f"Prévia removida (fim): {rem_fim if rem_fim else '(vazio)'}",
+                        )
+                    )
                 self._queue.put(("msg", ("Concluído", f"Guardado:\n{pd}", False)))
             except OSError as e:
                 self._queue.put(("msg", ("Erro", str(e), True)))
@@ -668,9 +870,20 @@ class App(tk.Tk):
         table_name = self._db_table.get().strip() or "documento_mesclado"
         content_col = self._db_content_col.get().strip() or "conteudo"
         report_cols = [c.strip() for c in self._db_report_cols.get().split(",") if c.strip()]
+        markers = self._markers_ativos()
         execute = self._db_execute.get()
         only_rtf = self._db_only_rtf.get()
         full_scan = self._db_full_scan.get()
+        strict_rtf_validation = self._db_strict_validation.get()
+        try:
+            batch_size = int(self._db_batch_size.get().strip())
+            if batch_size <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Commit por lote", "Informe um número inteiro > 0.")
+            return
+        self._stop_requested.clear()
+        self._db_progress_text.set("Progresso: iniciando...")
 
         def job() -> None:
             try:
@@ -689,6 +902,9 @@ class App(tk.Tk):
                         content_column=content_col,
                         id_column=None,
                         report_columns=report_cols,
+                        markers=markers,
+                        batch_size=batch_size,
+                        strict_rtf_validation=strict_rtf_validation,
                         log=lambda m: preview_lines.append(m) if len(preview_lines) < 20 else None,
                     )
                     if total_preview == 0:
@@ -741,6 +957,13 @@ class App(tk.Tk):
                         content_column=content_col,
                         id_column=None,
                         report_columns=report_cols,
+                        markers=markers,
+                        batch_size=batch_size,
+                        strict_rtf_validation=strict_rtf_validation,
+                        should_stop=lambda: self._stop_requested.is_set(),
+                        progress=lambda s, u, k: self.after(
+                            0, lambda: self._db_progress_text.set(f"Progresso: lidos={s} atualizados={u} ignorados={k}")
+                        ),
                         log=lambda m: self._queue.put(("log", m)),
                     )
                     self._last_batch_id = batch_id or ""
@@ -770,6 +993,13 @@ class App(tk.Tk):
                         content_column=content_col,
                         id_column=None,
                         report_columns=report_cols,
+                        markers=markers,
+                        batch_size=batch_size,
+                        strict_rtf_validation=strict_rtf_validation,
+                        should_stop=lambda: self._stop_requested.is_set(),
+                        progress=lambda s, u, k: self.after(
+                            0, lambda: self._db_progress_text.set(f"Progresso: lidos={s} simulados={u} ignorados={k}")
+                        ),
                         log=lambda m: self._queue.put(("log", m)),
                     )
                     self._queue.put(
@@ -784,6 +1014,8 @@ class App(tk.Tk):
                     )
             except Exception as e:  # noqa: BLE001
                 self._queue.put(("msg", ("Erro", str(e), True)))
+            finally:
+                self.after(0, lambda: self._db_progress_text.set("Progresso: parado"))
         threading.Thread(target=job, daemon=True).start()
 
     def _ver_relatorio_batch(self) -> None:
@@ -820,6 +1052,35 @@ class App(tk.Tk):
                 self._queue.put(("msg", ("Erro relatório", str(e), True)))
 
         threading.Thread(target=job, daemon=True).start()
+
+    def _exportar_relatorio_csv(self) -> None:
+        try:
+            db_url = self._build_database_url()
+        except ValueError as e:
+            messagebox.showwarning("Conexão", str(e))
+            return
+        batch_id = self._db_batch_id.get().strip() or self._last_batch_id
+        if not batch_id:
+            messagebox.showwarning("Batch ID", "Informe um Batch ID para exportar.")
+            return
+        pasta = filedialog.askdirectory(title="Pasta para exportar CSV")
+        if not pasta:
+            return
+
+        def job() -> None:
+            try:
+                out_path = export_batch_report_csv(db_url, batch_id, output_dir=pasta)
+                self._queue.put(("msg", ("Exportação", f"CSV exportado:\n{out_path}", False)))
+                self._queue.put(("log", f"Relatório CSV exportado: {out_path}"))
+            except Exception as e:  # noqa: BLE001
+                self._queue.put(("msg", ("Erro exportação", str(e), True)))
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _parar_processamento_banco(self) -> None:
+        self._stop_requested.set()
+        self._db_progress_text.set("Progresso: solicitação de parada enviada...")
+        self._queue.put(("log", "Solicitação de parada enviada. Aguarde o término da etapa atual."))
 
     def _rollback_batch(self) -> None:
         try:
@@ -879,9 +1140,10 @@ class App(tk.Tk):
                     return
 
                 alterados = 0
+                markers = self._markers_ativos()
                 for po in ficheiros:
                     texto, modo = _ler_texto_preservando_bytes(po)
-                    limpo = limpar_arquivo_rtf(texto)
+                    limpo = limpar_arquivo_rtf(texto, markers=markers)
                     if modo_lote == "new_folder":
                         rel = po.relative_to(base)
                         pd = destino_base / rel
